@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="pt-BR">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>BetterTitus — Otimização Avançada para Windows</title>
+  <title>BetterTitus — Advanced Windows Optimization</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -19,6 +19,7 @@
       --accent: #a855f7;
       --accent-light: #c084fc;
       --accent-dark: #7e22ce;
+      --star: #facc15;
       --success: #10b981;
     }
 
@@ -93,12 +94,12 @@
     .nav-right {
       display: flex;
       align-items: center;
-      gap: 1.5rem;
+      gap: 1.35rem;
     }
 
     .nav-links {
       display: flex;
-      gap: 1.5rem;
+      gap: 1.4rem;
     }
 
     .nav-links a {
@@ -119,6 +120,26 @@
       gap: 0.5rem;
       padding-left: 1rem;
       border-left: 1px solid var(--border);
+    }
+
+    .lang-toggle {
+      height: 34px;
+      padding: 0 0.65rem;
+      border-radius: 8px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font-family: 'Inter', sans-serif;
+      font-size: 0.78rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .lang-toggle:hover {
+      color: var(--text);
+      border-color: var(--accent);
+      background: var(--surface-hover);
     }
 
     .social-btn {
@@ -191,7 +212,7 @@
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 14px;
-      padding: 1.4rem;
+      padding: 1.4rem 1.4rem 1.15rem;
       box-shadow: 0 20px 50px rgba(0, 0, 0, 0.55);
       text-align: left;
       transition: border-color 0.25s;
@@ -271,6 +292,56 @@
     .copy-btn.copied {
       background: var(--success);
       color: #ffffff;
+    }
+
+    /* GitHub Star Bar */
+    .github-star-bar {
+      margin-top: 1rem;
+      padding-top: 0.9rem;
+      border-top: 1px solid rgba(31, 27, 46, 0.75);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+
+    .github-star-text {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .github-star-text svg {
+      color: var(--text);
+      flex-shrink: 0;
+    }
+
+    .github-star-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      padding: 0.38rem 0.85rem;
+      border-radius: 8px;
+      background: rgba(168, 85, 247, 0.1);
+      border: 1px solid rgba(168, 85, 247, 0.28);
+      color: var(--text);
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 0.82rem;
+      transition: all 0.2s;
+    }
+
+    .github-star-link:hover {
+      background: rgba(168, 85, 247, 0.2);
+      border-color: var(--accent-light);
+      transform: translateY(-1px);
+    }
+
+    .github-star-link .star-icon {
+      color: var(--star);
     }
 
     /* Preview Showcase Image */
@@ -587,6 +658,10 @@
       .copy-btn {
         justify-content: center;
       }
+      .github-star-bar {
+        flex-direction: column;
+        align-items: flex-start;
+      }
     }
   </style>
 </head>
@@ -603,13 +678,14 @@
 
       <div class="nav-right">
         <nav class="nav-links">
-          <a href="#comando">Instalação</a>
-          <a href="#gaming">Por Game</a>
-          <a href="#recursos">Diferenciais</a>
-          <a href="#faq">Dúvidas</a>
+          <a href="#comando" data-i18n="nav_install">Install</a>
+          <a href="#gaming" data-i18n="nav_gaming">Per-Game</a>
+          <a href="#recursos" data-i18n="nav_features">Features</a>
+          <a href="#faq" data-i18n="nav_faq">FAQ</a>
         </nav>
 
         <div class="social-links">
+          <button class="lang-toggle" id="langToggle" onclick="toggleLanguage()" title="Switch language / Alterar idioma">EN</button>
           <a href="https://www.youtube.com/@fugazmusic" target="_blank" rel="noopener noreferrer" class="social-btn" aria-label="YouTube @fugazmusic" title="YouTube (@fugazmusic)">
             <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>
           </a>
@@ -628,14 +704,14 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
         Windows Debloat &amp; Performance
       </div>
-      <h1>Otimize seu Windows com um único comando.</h1>
-      <p>
-        Baseado na estrutura do WinUtil, o <strong>BetterTitus</strong> adiciona ajustes avançados de latência, limpeza de telemetria e presets prontos para extrair o máximo desempenho do sistema.
+      <h1 data-i18n="hero_title">Optimize your Windows with a single command.</h1>
+      <p data-i18n="hero_desc">
+        Built on top of WinUtil's foundation, <strong>BetterTitus</strong> adds advanced latency tweaks, telemetry cleanup, and ready-to-use presets to unlock maximum system performance.
       </p>
 
       <div class="cmd-wrapper">
         <div class="cmd-header">
-          <span><strong>Executar BetterTitus</strong> — Cole no PowerShell (Administrador)</span>
+          <span data-i18n="cmd_header"><strong>Run BetterTitus</strong> — Paste into PowerShell (Administrator)</span>
           <span>PowerShell 5.1+</span>
         </div>
         <div class="cmd-box">
@@ -644,16 +720,28 @@
           </div>
           <button class="copy-btn" id="copyBtn" onclick="copyCommand()">
             <svg id="copyIcon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-            <span id="copyText">Copiar</span>
+            <span id="copyText" data-i18n="btn_copy">Copy</span>
           </button>
+        </div>
+
+        <!-- GitHub Star CTA -->
+        <div class="github-star-bar">
+          <span class="github-star-text">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
+            <span data-i18n="star_prompt">Enjoying BetterTitus? Support the project on GitHub!</span>
+          </span>
+          <a href="https://github.com/fugaztweaks/hosts" target="_blank" rel="noopener noreferrer" class="github-star-link">
+            <svg class="star-icon" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
+            <span data-i18n="star_btn">Star on GitHub</span>
+          </a>
         </div>
       </div>
 
-      <!-- Imagem principal do repositório -->
+      <!-- Main Preview Image -->
       <div class="preview-wrapper">
         <img
           src="https://raw.githubusercontent.com/fugaztweaks/hosts/main/assets/bettertitus.png"
-          alt="Interface principal do BetterTitus"
+          alt="BetterTitus main interface"
           onclick="openLightbox(this.src)"
           onerror="this.closest('.preview-wrapper').style.display='none'"
         />
@@ -666,24 +754,24 @@
         <div class="exclusive-content">
           <div class="exclusive-tag">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
-            Exclusivo BetterTitus
+            <span data-i18n="excl_tag">BetterTitus Exclusive</span>
           </div>
-          <h2>Otimização individual por game</h2>
-          <p>
-            Configure ajustes específicos diretamente para cada jogo sem precisar alterar o comportamento global do Windows para o restante dos seus aplicativos.
+          <h2 data-i18n="excl_title">Per-game individual optimization</h2>
+          <p data-i18n="excl_desc">
+            Configure specific tweaks directly for each game without altering Windows' global behavior for the rest of your applications.
           </p>
           <ul class="exclusive-list">
             <li>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"></polyline></svg>
-              <span>Prioridade de CPU, afinidade de núcleos e preferências de GPU aplicadas por executável.</span>
+              <span data-i18n="excl_li1">CPU priority, core affinity, and GPU preferences applied per executable.</span>
             </li>
             <li>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"></polyline></svg>
-              <span>Desativação seletiva de Fullscreen Optimizations e ajustes focados em reduzir input lag.</span>
+              <span data-i18n="excl_li2">Selective Fullscreen Optimizations toggle and tweaks focused on lowering input lag.</span>
             </li>
             <li>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"></polyline></svg>
-              <span>Perfis dedicados para títulos competitivos e campanhas pesadas com reversão rápida.</span>
+              <span data-i18n="excl_li3">Dedicated profiles for competitive titles and heavy single-player games with quick revert.</span>
             </li>
           </ul>
         </div>
@@ -691,7 +779,7 @@
         <div class="exclusive-media">
           <img
             src="https://raw.githubusercontent.com/fugaztweaks/hosts/main/assets/gamingoptions.png"
-            alt="Aba de otimização individual por game no BetterTitus"
+            alt="BetterTitus per-game optimization tab"
             onclick="openLightbox(this.src)"
             onerror="this.closest('.exclusive-media').style.display='none'"
           />
@@ -701,130 +789,3 @@
 
     <!-- Features Section -->
     <section id="recursos">
-      <div class="section-title">
-        <h2>O que mais o BetterTitus entrega?</h2>
-        <p>Tudo o que faltava no WinUtil padrão para quem busca baixa latência e praticidade.</p>
-      </div>
-
-      <div class="features-grid">
-        <div class="feature-card">
-          <div class="feature-icon">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
-          </div>
-          <h3>Presets Inteligentes</h3>
-          <p>Perfis pré-configurados que aplicam os melhores tweaks de registro e serviços sem você precisar adivinhar o que marcar.</p>
-        </div>
-
-        <div class="feature-card">
-          <div class="feature-icon">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
-          </div>
-          <h3>Foco em Baixa Latência</h3>
-          <p>Ajustes extras voltados para estabilidade de frametime, redução de processos em segundo plano e resposta imediata de input.</p>
-        </div>
-
-        <div class="feature-card">
-          <div class="feature-icon">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
-          </div>
-          <h3>Sempre Atualizado</h3>
-          <p>Sem instaladores pesados ou arquivos compactados. O comando puxa a versão mais recente direto do repositório oficial.</p>
-        </div>
-      </div>
-    </section>
-
-    <!-- FAQ Section -->
-    <section class="faq-section" id="faq">
-      <div class="section-title">
-        <h2>Dúvidas frequentes</h2>
-        <p>Informações rápidas antes de executar o script no seu computador.</p>
-      </div>
-
-      <details class="faq-item">
-        <summary>
-          É seguro? Posso quebrar o Windows usando isso?
-          <span class="faq-icon">+</span>
-        </summary>
-        <div class="faq-answer">
-          Sim, é seguro. O script é totalmente aberto (open-source) e cria automaticamente um ponto de restauração antes de aplicar alterações profundas no sistema, permitindo reverter tudo caso precise.
-        </div>
-      </details>
-
-      <details class="faq-item">
-        <summary>
-          Como abro o PowerShell como Administrador?
-          <span class="faq-icon">+</span>
-        </summary>
-        <div class="faq-answer">
-          Clique com o botão direito no menu Iniciar do Windows (ou pressione <strong>Win + X</strong>) e selecione <strong>Terminal (Admin)</strong> ou <strong>Windows PowerShell (Admin)</strong>. Depois, cole o comando e pressione Enter.
-        </div>
-      </details>
-
-      <details class="faq-item">
-        <summary>
-          Funciona no Windows 10 e no Windows 11?
-          <span class="faq-icon">+</span>
-        </summary>
-        <div class="faq-answer">
-          Sim. O BetterTitus é compatível com Windows 10 e Windows 11 (incluindo edições Pro, Home e LTSC), adaptando os ajustes conforme a versão detectada.
-        </div>
-      </details>
-    </section>
-  </main>
-
-  <!-- Lightbox para ampliar as screenshots -->
-  <div class="lightbox" id="lightbox" onclick="closeLightbox()">
-    <img id="lightboxImg" src="" alt="Visualização ampliada" />
-  </div>
-
-  <footer>
-    <div class="footer-container">
-      <div>© 2026 <strong>BetterTitus</strong> — Desenvolvido por fugaztweaks.</div>
-      <div class="footer-socials">
-        <a href="https://www.youtube.com/@fugazmusic" target="_blank" rel="noopener noreferrer">
-          YouTube (@fugazmusic)
-        </a>
-        <a href="https://x.com/fugaztweaks" target="_blank" rel="noopener noreferrer">
-          Twitter (@fugaztweaks)
-        </a>
-      </div>
-    </div>
-  </footer>
-
-  <script>
-    function copyCommand() {
-      const command = "irm https://raw.githubusercontent.com/fugaztweaks/hosts/main/scripts/BetterTitus.ps1 | iex";
-      const btn = document.getElementById("copyBtn");
-      const text = document.getElementById("copyText");
-      const icon = document.getElementById("copyIcon");
-
-      navigator.clipboard.writeText(command).then(() => {
-        btn.classList.add("copied");
-        text.textContent = "Copiado!";
-        icon.innerHTML = '<polyline points="20 6 9 17 4 12"></polyline>';
-
-        setTimeout(() => {
-          btn.classList.remove("copied");
-          text.textContent = "Copiar";
-          icon.innerHTML = '<rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>';
-        }, 2000);
-      });
-    }
-
-    function openLightbox(src) {
-      const lightbox = document.getElementById("lightbox");
-      const img = document.getElementById("lightboxImg");
-      img.src = src;
-      lightbox.classList.add("active");
-    }
-
-    function closeLightbox() {
-      document.getElementById("lightbox").classList.remove("active");
-    }
-
-    document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") closeLightbox();
-    });
-  </script>
-</body>
-</html>
