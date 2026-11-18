@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>BetterTitus — Advanced Windows Optimization</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%23c084fc'/%3E%3Cstop offset='100%25' stop-color='%237e22ce'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='8' fill='url(%23g)'/%3E%3Cpolyline points='7 21 13 15 7 9' fill='none' stroke='%23ffffff' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cline x1='16' y1='23' x2='25' y2='23' stroke='%23ffffff' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -249,7 +250,7 @@
 
     .cmd-code {
       font-family: 'JetBrains Mono', monospace;
-      font-size: 0.86rem;
+      font-size: 0.92rem;
       color: #e9e6f2;
       overflow-x: auto;
       white-space: nowrap;
@@ -716,7 +717,7 @@
         </div>
         <div class="cmd-box">
           <div class="cmd-code" id="psCommand">
-            <span class="cmd-prompt">PS&gt;</span>irm https://raw.githubusercontent.com/fugaztweaks/hosts/main/scripts/BetterTitus.ps1 | iex
+            <span class="cmd-prompt">PS&gt;</span>irm is.gd/BetterTitus | iex
           </div>
           <button class="copy-btn" id="copyBtn" onclick="copyCommand()">
             <svg id="copyIcon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
@@ -789,3 +790,263 @@
 
     <!-- Features Section -->
     <section id="recursos">
+      <div class="section-title">
+        <h2 data-i18n="feat_title">What else does BetterTitus deliver?</h2>
+        <p data-i18n="feat_sub">Everything missing from standard WinUtil for users seeking low latency and convenience.</p>
+      </div>
+
+      <div class="features-grid">
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+          </div>
+          <h3 data-i18n="card1_title">Smart Presets</h3>
+          <p data-i18n="card1_desc">Pre-configured profiles that apply the best registry and service tweaks without having to guess what to check.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+          </div>
+          <h3 data-i18n="card2_title">Low Latency Focus</h3>
+          <p data-i18n="card2_desc">Extra tweaks aimed at frametime consistency, background process reduction, and instant input response.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
+          </div>
+          <h3 data-i18n="card3_title">Always Up to Date</h3>
+          <p data-i18n="card3_desc">No bloated installers or compressed archives. The command pulls the latest version straight from the official repository.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- FAQ Section -->
+    <section class="faq-section" id="faq">
+      <div class="section-title">
+        <h2 data-i18n="faq_title">Frequently Asked Questions</h2>
+        <p data-i18n="faq_sub">Quick info before running the script on your PC.</p>
+      </div>
+
+      <details class="faq-item">
+        <summary>
+          <span data-i18n="faq1_q">Is it safe? Can this break Windows?</span>
+          <span class="faq-icon">+</span>
+        </summary>
+        <div class="faq-answer" data-i18n="faq1_a">
+          Yes, it is safe. The script is completely open-source and automatically creates a system restore point before applying deep system changes, allowing you to revert everything if needed.
+        </div>
+      </details>
+
+      <details class="faq-item">
+        <summary>
+          <span data-i18n="faq2_q">How do I open PowerShell as Administrator?</span>
+          <span class="faq-icon">+</span>
+        </summary>
+        <div class="faq-answer" data-i18n="faq2_a">
+          Right-click the Windows Start button (or press <strong>Win + X</strong>) and select <strong>Terminal (Admin)</strong> or <strong>Windows PowerShell (Admin)</strong>. Then paste the command and press Enter.
+        </div>
+      </details>
+
+      <details class="faq-item">
+        <summary>
+          <span data-i18n="faq3_q">Does it work on both Windows 10 and Windows 11?</span>
+          <span class="faq-icon">+</span>
+        </summary>
+        <div class="faq-answer" data-i18n="faq3_a">
+          Yes. BetterTitus supports both Windows 10 and Windows 11 (including Pro, Home, and LTSC editions), adapting tweaks based on the detected OS version.
+        </div>
+      </details>
+    </section>
+  </main>
+
+  <!-- Lightbox for screenshots -->
+  <div class="lightbox" id="lightbox" onclick="closeLightbox()">
+    <img id="lightboxImg" src="" alt="Expanded preview" />
+  </div>
+
+  <footer>
+    <div class="footer-container">
+      <div data-i18n="footer_copy">© 2026 <strong>BetterTitus</strong> — Built by fugaztweaks.</div>
+      <div class="footer-socials">
+        <a href="https://github.com/fugaztweaks/hosts" target="_blank" rel="noopener noreferrer">
+          GitHub (fugaztweaks)
+        </a>
+        <a href="https://www.youtube.com/@fugazmusic" target="_blank" rel="noopener noreferrer">
+          YouTube (@fugazmusic)
+        </a>
+        <a href="https://x.com/fugaztweaks" target="_blank" rel="noopener noreferrer">
+          Twitter (@fugaztweaks)
+        </a>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    const translations = {
+      en: {
+        page_title: "BetterTitus — Advanced Windows Optimization",
+        nav_install: "Install",
+        nav_gaming: "Per-Game",
+        nav_features: "Features",
+        nav_faq: "FAQ",
+        hero_title: "Optimize your Windows with a single command.",
+        hero_desc: "Built on top of WinUtil's foundation, <strong>BetterTitus</strong> adds advanced latency tweaks, telemetry cleanup, and ready-to-use presets to unlock maximum system performance.",
+        cmd_header: "<strong>Run BetterTitus</strong> — Paste into PowerShell (Administrator)",
+        btn_copy: "Copy",
+        btn_copied: "Copied!",
+        star_prompt: "Enjoying BetterTitus? Support the project on GitHub!",
+        star_btn: "Star on GitHub",
+        excl_tag: "BetterTitus Exclusive",
+        excl_title: "Per-game individual optimization",
+        excl_desc: "Configure specific tweaks directly for each game without altering Windows' global behavior for the rest of your applications.",
+        excl_li1: "CPU priority, core affinity, and GPU preferences applied per executable.",
+        excl_li2: "Selective Fullscreen Optimizations toggle and tweaks focused on lowering input lag.",
+        excl_li3: "Dedicated profiles for competitive titles and heavy single-player games with quick revert.",
+        feat_title: "What else does BetterTitus deliver?",
+        feat_sub: "Everything missing from standard WinUtil for users seeking low latency and convenience.",
+        card1_title: "Smart Presets",
+        card1_desc: "Pre-configured profiles that apply the best registry and service tweaks without having to guess what to check.",
+        card2_title: "Low Latency Focus",
+        card2_desc: "Extra tweaks aimed at frametime consistency, background process reduction, and instant input response.",
+        card3_title: "Always Up to Date",
+        card3_desc: "No bloated installers or compressed archives. The command pulls the latest version straight from the official repository.",
+        faq_title: "Frequently Asked Questions",
+        faq_sub: "Quick info before running the script on your PC.",
+        faq1_q: "Is it safe? Can this break Windows?",
+        faq1_a: "Yes, it is safe. The script is completely open-source and automatically creates a system restore point before applying deep system changes, allowing you to revert everything if needed.",
+        faq2_q: "How do I open PowerShell as Administrator?",
+        faq2_a: "Right-click the Windows Start button (or press <strong>Win + X</strong>) and select <strong>Terminal (Admin)</strong> or <strong>Windows PowerShell (Admin)</strong>. Then paste the command and press Enter.",
+        faq3_q: "Does it work on both Windows 10 and Windows 11?",
+        faq3_a: "Yes. BetterTitus supports both Windows 10 and Windows 11 (including Pro, Home, and LTSC editions), adapting tweaks based on the detected OS version.",
+        footer_copy: "© 2026 <strong>BetterTitus</strong> — Built by fugaztweaks."
+      },
+      pt: {
+        page_title: "BetterTitus — Otimização Avançada para Windows",
+        nav_install: "Instalação",
+        nav_gaming: "Por Game",
+        nav_features: "Diferenciais",
+        nav_faq: "Dúvidas",
+        hero_title: "Otimize seu Windows com um único comando.",
+        hero_desc: "Baseado na estrutura do WinUtil, o <strong>BetterTitus</strong> adiciona ajustes avançados de latência, limpeza de telemetria e presets prontos para extrair o máximo desempenho do sistema.",
+        cmd_header: "<strong>Executar BetterTitus</strong> — Cole no PowerShell (Administrador)",
+        btn_copy: "Copiar",
+        btn_copied: "Copiado!",
+        star_prompt: "Curtiu o BetterTitus? Apoie o projeto deixando uma estrela no GitHub!",
+        star_btn: "Dar Star no GitHub",
+        excl_tag: "Exclusivo BetterTitus",
+        excl_title: "Otimização individual por game",
+        excl_desc: "Configure ajustes específicos diretamente para cada jogo sem precisar alterar o comportamento global do Windows para o restante dos seus aplicativos.",
+        excl_li1: "Prioridade de CPU, afinidade de núcleos e preferências de GPU aplicadas por executável.",
+        excl_li2: "Desativação seletiva de Fullscreen Optimizations e ajustes focados em reduzir input lag.",
+        excl_li3: "Perfis dedicados para títulos competitivos e campanhas pesadas com reversão rápida.",
+        feat_title: "O que mais o BetterTitus entrega?",
+        feat_sub: "Tudo o que faltava no WinUtil padrão para quem busca baixa latência e praticidade.",
+        card1_title: "Presets Inteligentes",
+        card1_desc: "Perfis pré-configurados que aplicam os melhores tweaks de registro e serviços sem você precisar adivinhar o que marcar.",
+        card2_title: "Foco em Baixa Latência",
+        card2_desc: "Ajustes extras voltados para estabilidade de frametime, redução de processos em segundo plano e resposta imediata de input.",
+        card3_title: "Sempre Atualizado",
+        card3_desc: "Sem instaladores pesados ou arquivos compactados. O comando puxa a versão mais recente direto do repositório oficial.",
+        faq_title: "Dúvidas frequentes",
+        faq_sub: "Informações rápidas antes de executar o script no seu computador.",
+        faq1_q: "É seguro? Posso quebrar o Windows usando isso?",
+        faq1_a: "Sim, é seguro. O script é totalmente aberto (open-source) e cria automaticamente um ponto de restauração antes de aplicar alterações profundas no sistema, permitindo reverter tudo caso precise.",
+        faq2_q: "Como abro o PowerShell como Administrador?",
+        faq2_a: "Clique com o botão direito no menu Iniciar do Windows (ou pressione <strong>Win + X</strong>) e selecione <strong>Terminal (Admin)</strong> ou <strong>Windows PowerShell (Admin)</strong>. Depois, cole o comando e pressione Enter.",
+        faq3_q: "Funciona no Windows 10 e no Windows 11?",
+        faq3_a: "Sim. O BetterTitus é compatível com Windows 10 e Windows 11 (incluindo edições Pro, Home e LTSC), adaptando os ajustes conforme a versão detectada.",
+        footer_copy: "© 2026 <strong>BetterTitus</strong> — Desenvolvido por fugaztweaks."
+      }
+    };
+
+    let currentLang = "en";
+
+    function detectPortuguese() {
+      const langs = navigator.languages && navigator.languages.length
+        ? navigator.languages
+        : [navigator.language || navigator.userLanguage || ""];
+      if (langs.some(lang => lang && lang.toLowerCase().startsWith("pt"))) {
+        return true;
+      }
+
+      try {
+        const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+        const ptTimezones = [
+          "America/Sao_Paulo", "America/Fortaleza", "America/Recife",
+          "America/Bahia", "America/Belem", "America/Manaus",
+          "America/Cuiaba", "America/Campo_Grande", "America/Porto_Velho",
+          "America/Boa_Vista", "America/Rio_Branco", "America/Noronha",
+          "America/Araguaina", "America/Maceio", "America/Santarem",
+          "Brazil/", "Europe/Lisbon", "Atlantic/Azores", "Atlantic/Madeira"
+        ];
+        if (ptTimezones.some(zone => tz.startsWith(zone))) {
+          return true;
+        }
+      } catch (e) {}
+
+      return false;
+    }
+
+    function applyLanguage(lang) {
+      currentLang = lang;
+      const dict = translations[lang];
+      document.documentElement.lang = lang === "pt" ? "pt-BR" : "en";
+      document.title = dict.page_title;
+      document.getElementById("langToggle").textContent = lang.toUpperCase();
+
+      document.querySelectorAll("[data-i18n]").forEach(el => {
+        const key = el.getAttribute("data-i18n");
+        if (dict[key]) {
+          el.innerHTML = dict[key];
+        }
+      });
+    }
+
+    function toggleLanguage() {
+      const next = currentLang === "en" ? "pt" : "en";
+      localStorage.setItem("bt_lang", next);
+      applyLanguage(next);
+    }
+
+    function copyCommand() {
+      const command = "irm is.gd/BetterTitus | iex";
+      const btn = document.getElementById("copyBtn");
+      const text = document.getElementById("copyText");
+      const icon = document.getElementById("copyIcon");
+
+      navigator.clipboard.writeText(command).then(() => {
+        btn.classList.add("copied");
+        text.textContent = translations[currentLang].btn_copied;
+        icon.innerHTML = '<polyline points="20 6 9 17 4 12"></polyline>';
+
+        setTimeout(() => {
+          btn.classList.remove("copied");
+          text.textContent = translations[currentLang].btn_copy;
+          icon.innerHTML = '<rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>';
+        }, 2000);
+      });
+    }
+
+    function openLightbox(src) {
+      const lightbox = document.getElementById("lightbox");
+      const img = document.getElementById("lightboxImg");
+      img.src = src;
+      lightbox.classList.add("active");
+    }
+
+    function closeLightbox() {
+      document.getElementById("lightbox").classList.remove("active");
+    }
+
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") closeLightbox();
+    });
+
+    const savedLang = localStorage.getItem("bt_lang");
+    const initialLang = savedLang ? savedLang : (detectPortuguese() ? "pt" : "en");
+    applyLanguage(initialLang);
+  </script>
+</body>
+</html>
