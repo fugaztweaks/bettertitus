@@ -1,17 +1,157 @@
 # ==============================================================================
-# BetterTitus - by fugaztweaks (Version 0.6 Beta)
-# Windows Optimization, Deep Cleanup & Competitive Gaming Utility
+# BetterTitus - by fugaztweaks (Version 0.7 Beta)
+# Windows Optimization, Fast Deep Cleanup & Competitive Gaming Utility
 # ==============================================================================
 
+# Auto-elevação compatível tanto com execução local (.ps1) quanto remota (irm | iex)
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Start-Process powershell.exe "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
+    if (-not [string]::IsNullOrWhiteSpace($PSCommandPath) -and (Test-Path $PSCommandPath)) {
+        Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
+    } else {
+        $tempRunner = Join-Path $env:TEMP "BetterTitus_RunAs.ps1"
+        $MyInvocation.MyCommand.ScriptBlock.ToString() | Set-Content -Path $tempRunner -Encoding UTF8 -Force
+        Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command `"& '$tempRunner'; Remove-Item '$tempRunner' -Force -ErrorAction SilentlyContinue`"" -Verb RunAs
+    }
     return
 }
 
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Windows.Forms, System.Drawing
 
 # ==============================================================================
-# DIRETÓRIO SEGURO COM ACL RESTRITA (ANTI-PRIVILEGE ESCALATION PARA SYSTEM TASKS)
+# MOTOR NATIVO C# PARA LIMPEZA PROFUNDA ULTRA-RÁPIDA (SEM TRAVAR EM JUNCTIONS)
+# ==============================================================================
+if (-not ([System.Management.Automation.PSTypeName]'BetterTitus.FastCleaner').Type) {
+    Add-Type -TypeDefinition @"
+using System;
+using System.Collections.Generic;
+using System.IO;
+
+namespace BetterTitus {
+    public static class FastCleaner {
+        private static IEnumerable<string> ResolveTargets(string pattern) {
+            if (string.IsNullOrWhiteSpace(pattern)) yield break;
+            pattern = Environment.ExpandEnvironmentVariables(pattern);
+
+            int wildIdx = pattern.IndexOfAny(new char[] { '*', '?' });
+            if (wildIdx == -1) {
+                if (File.Exists(pattern) || Directory.Exists(pattern)) yield return pattern;
+                yield break;
+            }
+
+            int lastSlash = pattern.LastIndexOf('\\', wildIdx);
+            if (lastSlash < 0) yield break;
+
+            string root = pattern.Substring(0, lastSlash);
+            if (!Directory.Exists(root)) yield break;
+
+            string rest = pattern.Substring(lastSlash + 1);
+            string[] parts = rest.Split(new char[] { '\\' }, StringSplitOptions.RemoveEmptyEntries);
+
+            List<string> current = new List<string> { root };
+            for (int i = 0; i < parts.Length; i++) {
+                List<string> next = new List<string>();
+                bool isLast = (i == parts.Length - 1);
+                string seg = parts[i];
+
+                foreach (string dir in current) {
+                    try {
+                        DirectoryInfo di = new DirectoryInfo(dir);
+                        if ((di.Attributes & FileAttributes.ReparsePoint) != 0) continue;
+
+                        if (isLast) {
+                            foreach (string f in Directory.EnumerateFiles(dir, seg, SearchOption.TopDirectoryOnly))
+                                next.Add(f);
+                            foreach (string d in Directory.EnumerateDirectories(dir, seg, SearchOption.TopDirectoryOnly))
+                                next.Add(d);
+                        } else {
+                            foreach (string d in Directory.EnumerateDirectories(dir, seg, SearchOption.TopDirectoryOnly)) {
+                                DirectoryInfo subDi = new DirectoryInfo(d);
+                                if ((subDi.Attributes & FileAttributes.ReparsePoint) == 0)
+                                    next.Add(d);
+                            }
+                        }
+                    } catch { }
+                }
+                current = next;
+                if (current.Count == 0) break;
+            }
+
+            foreach (string item in current) yield return item;
+        }
+
+        private static long GetDirSizeSafe(DirectoryInfo dir) {
+            long total = 0;
+            try {
+                if ((dir.Attributes & FileAttributes.ReparsePoint) != 0) return 0;
+                foreach (FileInfo fi in dir.EnumerateFiles("*", SearchOption.TopDirectoryOnly)) {
+                    try { total += fi.Length; } catch { }
+                }
+                foreach (DirectoryInfo sub in dir.EnumerateDirectories("*", SearchOption.TopDirectoryOnly)) {
+                    total += GetDirSizeSafe(sub);
+                }
+            } catch { }
+            return total;
+        }
+
+        public static long GetPatternSize(string[] patterns) {
+            long total = 0;
+            if (patterns == null) return 0;
+            foreach (string pat in patterns) {
+                foreach (string target in ResolveTargets(pat)) {
+                    try {
+                        if (File.Exists(target)) {
+                            total += new FileInfo(target).Length;
+                        } else if (Directory.Exists(target)) {
+                            total += GetDirSizeSafe(new DirectoryInfo(target));
+                        }
+                    } catch { }
+                }
+            }
+            return total;
+        }
+
+        private static void DeleteDirSafe(DirectoryInfo dir, bool removeRoot) {
+            try {
+                if ((dir.Attributes & FileAttributes.ReparsePoint) != 0) return;
+                foreach (FileInfo fi in dir.EnumerateFiles("*", SearchOption.TopDirectoryOnly)) {
+                    try {
+                        fi.Attributes = FileAttributes.Normal;
+                        fi.Delete();
+                    } catch { }
+                }
+                foreach (DirectoryInfo sub in dir.EnumerateDirectories("*", SearchOption.TopDirectoryOnly)) {
+                    DeleteDirSafe(sub, true);
+                }
+                if (removeRoot) {
+                    try { dir.Delete(false); } catch { }
+                }
+            } catch { }
+        }
+
+        public static void CleanPattern(string[] patterns) {
+            if (patterns == null) return;
+            foreach (string pat in patterns) {
+                bool isWildcardContent = pat.EndsWith("\\*");
+                foreach (string target in ResolveTargets(pat)) {
+                    try {
+                        if (File.Exists(target)) {
+                            FileInfo fi = new FileInfo(target);
+                            fi.Attributes = FileAttributes.Normal;
+                            fi.Delete();
+                        } else if (Directory.Exists(target)) {
+                            DeleteDirSafe(new DirectoryInfo(target), !isWildcardContent || pat.IndexOf('*') < pat.Length - 1);
+                        }
+                    } catch { }
+                }
+            }
+        }
+    }
+}
+"@ -ErrorAction Stop
+}
+
+# ==============================================================================
+# DIRETÓRIO SEGURO COM ACL RESTRITA
 # ==============================================================================
 $script:ConfigDir   = "$env:ProgramData\BetterTitus"
 $script:GamesJson   = "$script:ConfigDir\games.json"
@@ -91,8 +231,8 @@ Ensure-BetterTitusIcon $script:IconPath
 [xml]$xaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="BetterTitus - by fugaztweaks (Version 0.6 Beta)" 
-        Height="890" Width="1360" MinHeight="750" MinWidth="1180"
+        Title="BetterTitus - by fugaztweaks (Version 0.7 Beta)" 
+        Height="860" Width="1360" MinHeight="720" MinWidth="1180"
         WindowStartupLocation="CenterScreen" 
         WindowStyle="None"
         AllowsTransparency="True"
@@ -104,7 +244,6 @@ Ensure-BetterTitusIcon $script:IconPath
         TextOptions.TextRenderingMode="ClearType">
 
     <Window.Resources>
-        <!-- Identidade Visual BetterTitus (Dark Purple Palette) -->
         <SolidColorBrush x:Key="BgMain" Color="#111017"/>
         <SolidColorBrush x:Key="BgPanel" Color="#171520"/>
         <SolidColorBrush x:Key="BgHeader" Color="#0C0B10"/>
@@ -118,7 +257,6 @@ Ensure-BetterTitusIcon $script:IconPath
         <SolidColorBrush x:Key="PurpleHeader" Color="#A78BFA"/>
         <SolidColorBrush x:Key="PurpleAccent" Color="#7C3AED"/>
 
-        <!-- Estilo Global de ToolTip Refinado -->
         <Style TargetType="ToolTip">
             <Setter Property="Background" Value="#1B172B"/>
             <Setter Property="Foreground" Value="#F3F4F6"/>
@@ -139,7 +277,6 @@ Ensure-BetterTitusIcon $script:IconPath
             </Setter>
         </Style>
 
-        <!-- Botão Padrão -->
         <Style x:Key="BTButton" TargetType="Button">
             <Setter Property="Background" Value="{DynamicResource BgBtn}"/>
             <Setter Property="Foreground" Value="{DynamicResource TextMain}"/>
@@ -167,13 +304,15 @@ Ensure-BetterTitusIcon $script:IconPath
                             <Trigger Property="IsPressed" Value="True">
                                 <Setter TargetName="bd" Property="Background" Value="{DynamicResource BgBtnActive}"/>
                             </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="bd" Property="Opacity" Value="0.45"/>
+                            </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
         </Style>
 
-        <!-- Botão de Aba Superior -->
         <Style x:Key="NavTabBtn" TargetType="Button" BasedOn="{StaticResource BTButton}">
             <Setter Property="FontWeight" Value="Bold"/>
             <Setter Property="FontSize" Value="12"/>
@@ -181,7 +320,6 @@ Ensure-BetterTitusIcon $script:IconPath
             <Setter Property="Margin" Value="2.5,0"/>
         </Style>
 
-        <!-- CheckBox Refinada -->
         <Style x:Key="BTCheck" TargetType="CheckBox">
             <Setter Property="Foreground" Value="{DynamicResource TextMain}"/>
             <Setter Property="FontSize" Value="12"/>
@@ -219,7 +357,6 @@ Ensure-BetterTitusIcon $script:IconPath
             </Setter>
         </Style>
 
-        <!-- Interruptor Deslizante Roxo com Animação Suave -->
         <Style x:Key="BTToggleSwitch" TargetType="CheckBox">
             <Setter Property="Foreground" Value="{DynamicResource TextMain}"/>
             <Setter Property="FontSize" Value="12"/>
@@ -285,7 +422,6 @@ Ensure-BetterTitusIcon $script:IconPath
             </Setter>
         </Style>
 
-        <!-- Estilo Limpo para a Lista de Jogos -->
         <Style x:Key="GameListBoxItemStyle" TargetType="ListBoxItem">
             <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
             <Setter Property="Padding" Value="0"/>
@@ -319,7 +455,7 @@ Ensure-BetterTitusIcon $script:IconPath
             <Grid.RowDefinitions>
                 <RowDefinition Height="46"/>
                 <RowDefinition Height="*"/>
-                <RowDefinition Height="115"/>
+                <RowDefinition Height="64"/>
             </Grid.RowDefinitions>
 
             <!-- 1. BARRA SUPERIOR -->
@@ -356,7 +492,7 @@ Ensure-BetterTitusIcon $script:IconPath
                             <StackPanel Orientation="Horizontal">
                                 <TextBlock Text="BetterTitus" Foreground="{DynamicResource TextMain}" FontWeight="Bold" FontSize="13.5"/>
                                 <Border Background="#2D2642" BorderBrush="#7C3AED" BorderThickness="1" CornerRadius="3" Padding="5,0" Margin="6,0,0,0" VerticalAlignment="Center">
-                                    <TextBlock Text="Version 0.6 Beta" Foreground="#A78BFA" FontSize="10" FontWeight="SemiBold"/>
+                                    <TextBlock Text="Version 0.7 Beta" Foreground="#A78BFA" FontSize="10" FontWeight="SemiBold"/>
                                 </Border>
                             </StackPanel>
                             <TextBlock Text="by fugaztweaks" Foreground="{DynamicResource TextDim}" FontSize="10" Margin="0,-1,0,0"/>
@@ -395,7 +531,7 @@ Ensure-BetterTitusIcon $script:IconPath
                         </Grid>
                     </Border>
 
-                    <!-- Seletor de Idioma em Barra (English | Português BR) -->
+                    <!-- Seletor de Idioma -->
                     <Border Grid.Column="3" Background="#171520" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="4" Height="28" Margin="0,0,10,0" Padding="2">
                         <StackPanel Orientation="Horizontal">
                             <Button x:Name="BtnLangEN" Content="English" Style="{StaticResource BTButton}" Margin="0" Padding="9,2" BorderThickness="0"/>
@@ -414,9 +550,9 @@ Ensure-BetterTitusIcon $script:IconPath
             </Border>
 
             <!-- ====================================================================== -->
-            <!-- ABA 1: TWEAKS (Completa com Tooltips Bilíngues + Segurança Explícita)  -->
+            <!-- ABA 1: TWEAKS                                                          -->
             <!-- ====================================================================== -->
-            <Grid Grid.Row="1" x:Name="ViewTweaks" Visibility="Visible" Margin="12,8,12,4">
+            <Grid Grid.Row="1" x:Name="ViewTweaks" Visibility="Visible" Margin="12,8,12,6">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
@@ -716,15 +852,14 @@ Ensure-BetterTitusIcon $script:IconPath
             </Grid>
 
             <!-- ====================================================================== -->
-            <!-- ABA 3: LIMPEZA PROFUNDA (DISM++ DEEP CLEAN - 5 CATEGORIAS / 25 ITENS)  -->
+            <!-- ABA 3: LIMPEZA PROFUNDA (DISM++ DEEP CLEAN - ASSÍNCRONO E INSTANTÂNEO) -->
             <!-- ====================================================================== -->
-            <Grid Grid.Row="1" x:Name="ViewDeepClean" Visibility="Collapsed" Margin="12,8,12,4">
+            <Grid Grid.Row="1" x:Name="ViewDeepClean" Visibility="Collapsed" Margin="12,8,12,6">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
 
-                <!-- Barra Superior de Controles da Limpeza Profunda -->
                 <Border Grid.Row="0" Background="{DynamicResource BgPanel}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="4" Padding="14,10" Margin="0,0,0,8">
                     <Grid>
                         <Grid.ColumnDefinitions>
@@ -746,7 +881,6 @@ Ensure-BetterTitusIcon $script:IconPath
                     </Grid>
                 </Border>
 
-                <!-- Lista de Categorias e Itens (2 Colunas Balanceadas para Visualização Limpa) -->
                 <Grid Grid.Row="1">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
@@ -757,7 +891,6 @@ Ensure-BetterTitusIcon $script:IconPath
                     <Border Grid.Column="0" Background="{DynamicResource BgPanel}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="4" Margin="0,0,5,0" Padding="16,12">
                         <ScrollViewer VerticalScrollBarVisibility="Auto">
                             <StackPanel>
-                                <!-- Categoria 1: Arquivos Expirados -->
                                 <CheckBox x:Name="CatExpired" IsChecked="True" Style="{StaticResource BTCheck}" FontFamily="Consolas" FontSize="14.5" FontWeight="Bold" Foreground="{DynamicResource PurpleHeader}" Margin="0,0,0,4"/>
                                 <StackPanel Margin="20,0,0,10">
                                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
@@ -774,7 +907,6 @@ Ensure-BetterTitusIcon $script:IconPath
                                     </Grid>
                                 </StackPanel>
 
-                                <!-- Categoria 2: Sistema -->
                                 <CheckBox x:Name="CatSystem" IsChecked="True" Style="{StaticResource BTCheck}" FontFamily="Consolas" FontSize="14.5" FontWeight="Bold" Foreground="{DynamicResource PurpleHeader}" Margin="0,4,0,4"/>
                                 <StackPanel Margin="20,0,0,10">
                                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
@@ -799,7 +931,6 @@ Ensure-BetterTitusIcon $script:IconPath
                                     </Grid>
                                 </StackPanel>
 
-                                <!-- Categoria 4: Aplicações -->
                                 <CheckBox x:Name="CatApps" IsChecked="True" Style="{StaticResource BTCheck}" FontFamily="Consolas" FontSize="14.5" FontWeight="Bold" Foreground="{DynamicResource PurpleHeader}" Margin="0,4,0,4"/>
                                 <StackPanel Margin="20,0,0,4">
                                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
@@ -819,7 +950,6 @@ Ensure-BetterTitusIcon $script:IconPath
                     <Border Grid.Column="1" Background="{DynamicResource BgPanel}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="4" Margin="5,0,0,0" Padding="16,12">
                         <ScrollViewer VerticalScrollBarVisibility="Auto">
                             <StackPanel>
-                                <!-- Categoria 3: Arquivos de Cache -->
                                 <CheckBox x:Name="CatCache" IsChecked="True" Style="{StaticResource BTCheck}" FontFamily="Consolas" FontSize="14.5" FontWeight="Bold" Foreground="{DynamicResource PurpleHeader}" Margin="0,0,0,4"/>
                                 <StackPanel Margin="20,0,0,10">
                                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
@@ -856,7 +986,6 @@ Ensure-BetterTitusIcon $script:IconPath
                                     </Grid>
                                 </StackPanel>
 
-                                <!-- Categoria 5: Arquivos Temporários -->
                                 <CheckBox x:Name="CatTemp" IsChecked="True" Style="{StaticResource BTCheck}" FontFamily="Consolas" FontSize="14.5" FontWeight="Bold" Foreground="{DynamicResource PurpleHeader}" Margin="0,4,0,4"/>
                                 <StackPanel Margin="20,0,0,4">
                                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
@@ -927,30 +1056,20 @@ Ensure-BetterTitusIcon $script:IconPath
                 </StackPanel>
             </Grid>
 
-            <!-- 4. RODAPÉ GLOBAL -->
-            <Border Grid.Row="2" Background="{DynamicResource BgHeader}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="0,1,0,0" Padding="14,8">
-                <Grid>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="*"/>
-                    </Grid.RowDefinitions>
+            <!-- 4. RODAPÉ LIMPO (SEM LOG INTERNO - TODO LOG SAI NO CONSOLE POWERSHELL) -->
+            <Border Grid.Row="2" Background="{DynamicResource BgHeader}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="0,1,0,0" Padding="16,0">
+                <Grid VerticalAlignment="Center">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
 
-                    <TextBlock Grid.Row="0" x:Name="LblFooterNote" Foreground="{DynamicResource PurpleHeader}" FontSize="11.5" Margin="0,0,0,6"/>
+                    <TextBlock Grid.Column="0" x:Name="LblFooterNote" Foreground="{DynamicResource PurpleHeader}" FontSize="12" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,16,0"/>
 
-                    <Grid Grid.Row="1">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-                        <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-                            <Button x:Name="BtnRunTweaks" Style="{StaticResource BTButton}" Background="#7C3AED" BorderBrush="#A78BFA" Padding="18,8" FontWeight="Bold"/>
-                            <Button x:Name="BtnUndoTweaks" Style="{StaticResource BTButton}" Padding="16,8" Margin="4,0,0,4"/>
-                        </StackPanel>
-
-                        <Border Grid.Column="1" Background="{DynamicResource BgPanel}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="4" Margin="12,0,0,0" Padding="8,4">
-                            <TextBox x:Name="TxtLog" Background="Transparent" Foreground="#A78BFA" FontFamily="Consolas" FontSize="11.5" BorderThickness="0" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" Text="[INIT] BetterTitus Version 0.6 Beta initialized."/>
-                        </Border>
-                    </Grid>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Button x:Name="BtnRunTweaks" Style="{StaticResource BTButton}" Background="#7C3AED" BorderBrush="#A78BFA" Padding="20,8" FontWeight="Bold" Margin="0,0,8,0"/>
+                        <Button x:Name="BtnUndoTweaks" Style="{StaticResource BTButton}" Padding="18,8" Margin="0"/>
+                    </StackPanel>
                 </Grid>
             </Border>
         </Grid>
@@ -972,13 +1091,28 @@ $xaml.SelectNodes("//*[@*[contains(translate(name(.),'n','N'),'Name')]]") | ForE
 }
 
 # ==============================================================================
-# HELPERS DE LOG, REGISTRO, SERVIÇOS E HARDWARE
+# SISTEMA DE LOG DIRETO NO TERMINAL POWERSHELL (ESTILO CHRIS TITUS TECH)
 # ==============================================================================
 function Write-BTLog ([string]$Message, [string]$Level = "INFO") {
     $time = Get-Date -Format "HH:mm:ss"
-    $TxtLog.AppendText("`r`n[$time][$Level] $Message")
-    $TxtLog.ScrollToEnd()
+    $color = switch ($Level) {
+        "OK"      { "Green" }
+        "WARN"    { "Yellow" }
+        "ERROR"   { "Red" }
+        "PARTIAL" { "DarkYellow" }
+        "HEADER"  { "Magenta" }
+        default   { "Cyan" }
+    }
+    Write-Host "[$time] " -NoNewline -ForegroundColor DarkGray
+    Write-Host "[$Level] " -NoNewline -ForegroundColor $color
+    Write-Host $Message -ForegroundColor White
 }
+
+Clear-Host
+Write-Host "==============================================================================" -ForegroundColor Magenta
+Write-Host "  BetterTitus v0.7 Beta - by fugaztweaks" -ForegroundColor White
+Write-Host "  Console Verbose Output Active | Todos os logs serao exibidos aqui" -ForegroundColor DarkGray
+Write-Host "==============================================================================" -ForegroundColor Magenta
 
 function Set-Reg ([string]$Path, [string]$Name, $Value, [string]$Type = "DWord") {
     if (-not (Test-Path $Path)) { New-Item -Path $Path -Force -ErrorAction Stop | Out-Null }
@@ -999,8 +1133,8 @@ function Invoke-SafeTweak ([string]$Title, [scriptblock]$Action, [scriptblock]$V
     try {
         & $Action
         if ($null -ne $Verify) {
-            if (& $Verify) { Write-BTLog "$Title -> OK" "OK" }
-            else { Write-BTLog "$Title -> Aplicado parcialmente." "PARTIAL" }
+            if (& $Verify) { Write-BTLog "$Title -> Aplicado com sucesso" "OK" }
+            else { Write-BTLog "$Title -> Aplicado parcialmente" "PARTIAL" }
         } else {
             Write-BTLog "$Title -> OK" "OK"
         }
@@ -1053,6 +1187,8 @@ function Initialize-HardwareCache {
 }
 
 $script:HwInfo = Initialize-HardwareCache
+Write-BTLog "Hardware detectado: $($script:HwInfo.Cores) Cores / $($script:HwInfo.Threads) Threads | RAM: $([math]::Round($script:HwInfo.RamKB / 1048576, 1)) GB | NVIDIA: $($script:HwInfo.HasNvidia)" "INFO"
+
 $script:GameStateCache = @{ Dscp = $false; Affinity = $false; Dx11State = "NONE"; NvTel = $false; Exe = ""; IsValorant = $false }
 $script:WinUpdateDisabledCache = $false
 
@@ -1090,223 +1226,169 @@ function Restore-NvidiaBackupIfNeeded {
 # DICIONÁRIO CENTRALIZADO DE TEXTOS E TOOLTIPS BILÍNGUES (PT-BR & EN)
 # ==============================================================================
 $script:ControlMeta = @{
-    # Coluna Esquerda - Essential
     "ChkActivity"        = @{ PT="Histórico de Atividades - Desativar (?)"; EN="Activity History - Disable (?)";
-                              TipPT="O que faz: Desativa a coleta da Linha do Tempo e histórico de arquivos abertos.`nBenefício: Maior privacidade e menos gravações em disco em segundo plano.`nEfeitos: Nenhum impacto negativo no uso diário.";
-                              TipEN="What it does: Disables Windows Activity Feed and timeline tracking.`nBenefit: Improved privacy and reduced background disk writes.`nSide effects: None for normal usage." }
+                              TipPT="O que faz: Desativa a coleta da Linha do Tempo e histórico de arquivos abertos.`nBenefício: Maior privacidade e menos gravações em disco em segundo plano.";
+                              TipEN="What it does: Disables Windows Activity Feed and timeline tracking.`nBenefit: Improved privacy and reduced background disk writes." }
     "ChkConsumer"        = @{ PT="Recursos do Consumidor (Apps Sugeridos) - Desativar (?)"; EN="ConsumerFeatures (Silent Bloatware) - Disable (?)";
-                              TipPT="O que faz: Impede o Windows de baixar aplicativos patrocinados automaticamente (Candy Crush, TikTok, etc.).`nBenefício: Mantém o sistema limpo e economiza banda e espaço.`nEfeitos: Nenhum.";
-                              TipEN="What it does: Stops Windows from silently installing sponsored Store apps.`nBenefit: Prevents bloatware and saves disk/bandwidth.`nSide effects: None." }
+                              TipPT="O que faz: Impede o Windows de baixar aplicativos patrocinados automaticamente.`nBenefício: Mantém o sistema limpo e economiza banda e espaço.";
+                              TipEN="What it does: Stops Windows from silently installing sponsored Store apps.`nBenefit: Prevents bloatware and saves disk/bandwidth." }
     "ChkDelivery"        = @{ PT="Otimização de Entrega (Updates P2P) - Desativar (?)"; EN="Delivery Optimization (P2P Updates) - Disable (?)";
-                              TipPT="O que faz: Desativa o envio peer-to-peer (P2P) de atualizações do Windows para outros PCs na internet.`nBenefício: Evita picos de ping e uso oculto do seu upload durante jogos.`nEfeitos: Atualizações vêm apenas dos servidores oficiais da Microsoft.";
-                              TipEN="What it does: Disables P2P uploading of Windows Updates to other PCs.`nBenefit: Prevents random ping spikes and hidden upload usage.`nSide effects: Updates download directly from Microsoft servers." }
+                              TipPT="O que faz: Desativa o envio peer-to-peer (P2P) de atualizações do Windows para outros PCs.`nBenefício: Evita picos de ping e uso oculto do seu upload durante jogos.";
+                              TipEN="What it does: Disables P2P uploading of Windows Updates to other PCs.`nBenefit: Prevents random ping spikes and hidden upload usage." }
     "ChkEndTask"         = @{ PT="Finalizar Tarefa na Barra de Tarefas - Ativar (?)"; EN="End Task With Right Click on Taskbar - Enable (?)";
-                              TipPT="O que faz: Adiciona a opção 'Finalizar tarefa' ao clicar com botão direito em apps abertos na Barra de Tarefas (Win 11).`nBenefício: Fecha jogos ou apps travados sem precisar abrir o Gerenciador de Tarefas.`nEfeitos: Apenas para Windows 11.";
-                              TipEN="What it does: Adds 'End task' directly to the Taskbar right-click menu (Win 11).`nBenefit: Quickly force-close frozen apps or games.`nSide effects: Windows 11 only." }
+                              TipPT="O que faz: Adiciona 'Finalizar tarefa' ao clicar com botão direito na Barra de Tarefas (Win 11).`nBenefício: Fecha jogos ou apps travados rapidamente.";
+                              TipEN="What it does: Adds 'End task' directly to the Taskbar right-click menu (Win 11).`nBenefit: Quickly force-close frozen apps or games." }
     "ChkFolderDisc"      = @{ PT="Descoberta Automática de Pastas do Explorer - Desativar (?)"; EN="File Explorer Automatic Folder Discovery - Disable (?)";
-                              TipPT="O que faz: Impede o Explorer de tentar adivinhar se cada pasta é de Música, Vídeos ou Imagens.`nBenefício: Pastas com milhares de arquivos abrem instantaneamente.`nEfeitos: Todas as pastas usam o layout padrão 'Itens Gerais'.";
-                              TipEN="What it does: Stops Explorer from scanning folders to guess media type.`nBenefit: Much faster folder loading in File Explorer.`nSide effects: Folders default to General Items view." }
+                              TipPT="O que faz: Impede o Explorer de tentar adivinhar o tipo de mídia de cada pasta.`nBenefício: Pastas com milhares de arquivos abrem instantaneamente.";
+                              TipEN="What it does: Stops Explorer from scanning folders to guess media type.`nBenefit: Much faster folder loading in File Explorer." }
     "ChkHibernation"     = @{ PT="Hibernação do Sistema - Desativar (?)"; EN="Hibernation - Disable (?)";
-                              TipPT="O que faz: Desativa a hibernação e remove o arquivo oculto hiberfil.sys.`nBenefício: Libera vários GBs no SSD (geralmente 40% da sua RAM) e reduz desgaste de escrita.`nEfeitos: Desativa o recurso Fast Startup (Inicialização Rápida).";
-                              TipEN="What it does: Disables hibernation and deletes hiberfil.sys.`nBenefit: Frees several GBs on your SSD and reduces SSD wear.`nSide effects: Also disables Windows Fast Startup." }
+                              TipPT="O que faz: Desativa a hibernação e remove o arquivo oculto hiberfil.sys.`nBenefício: Libera vários GBs no SSD.";
+                              TipEN="What it does: Disables hibernation and deletes hiberfil.sys.`nBenefit: Frees several GBs on your SSD." }
     "ChkLocation"        = @{ PT="Rastreamento de Localização - Desativar (?)"; EN="Location Tracking - Disable (?)";
-                              TipPT="O que faz: Bloqueia o acesso global de geolocalização do sistema.`nBenefício: Mais privacidade e menos serviços em segundo plano.`nEfeitos: Apps de Clima/Mapas exigirão definir a cidade manualmente.";
-                              TipEN="What it does: Denies global system geolocation access.`nBenefit: Better privacy and fewer background polls.`nSide effects: Weather/Maps apps require manual city selection." }
+                              TipPT="O que faz: Bloqueia o acesso global de geolocalização do sistema.`nBenefício: Mais privacidade e menos serviços em segundo plano.";
+                              TipEN="What it does: Denies global system geolocation access.`nBenefit: Better privacy and fewer background polls." }
     "ChkMemCompression"  = @{ PT="Compactação de Memória (Memory Compression) - Desativar (?)"; EN="Memory Compression - Disable (?)";
-                              TipPT="O que faz: Desativa a compressão de páginas de memória na RAM executada pelo processo System (ntoskrnl).`nBenefício: Reduz overhead de CPU, latência DPC e micro-stutters em PCs com 16GB ou mais de RAM.`nEfeitos: Aumenta levemente o consumo de RAM física; recomendado apenas para PCs com >= 16GB RAM.";
-                              TipEN="What it does: Disables Windows RAM page compression handled by the System process.`nBenefit: Reduces CPU compression overhead, DPC latency, and micro-stutters on systems with 16GB+ RAM.`nSide effects: Slightly higher physical RAM usage; recommended for PCs with >= 16GB RAM." }
+                              TipPT="O que faz: Desativa a compressão de páginas na RAM executada pelo processo System.`nBenefício: Reduz overhead de CPU e micro-stutters em PCs com 16GB+ RAM.";
+                              TipEN="What it does: Disables Windows RAM page compression handled by System.`nBenefit: Reduces CPU overhead and micro-stutters on 16GB+ RAM systems." }
     "ChkStoreSearch"     = @{ PT="Resultados da Microsoft Store na Busca - Desativar (?)"; EN="Microsoft Store Search Results - Disable (?)";
-                              TipPT="O que faz: Remove a sugestão 'Procurar um aplicativo na Microsoft Store' ao abrir arquivos desconhecidos.`nBenefício: Interface mais limpa e sem pop-ups da loja.`nEfeitos: Nenhum.";
-                              TipEN="What it does: Removes 'Look for an app in the Microsoft Store' prompts.`nBenefit: Cleaner open-with experience.`nSide effects: None." }
+                              TipPT="O que faz: Remove a sugestão 'Procurar um aplicativo na Microsoft Store'.";
+                              TipEN="What it does: Removes 'Look for an app in the Microsoft Store' prompts." }
     "ChkDeviceCompanion" = @{ PT="Impedir Apps Complementares de Dispositivos - Ativar (?)"; EN="Prevent Device Companion Apps - Enable (?)";
-                              TipPT="O que faz: Bloqueia o download automático de metadados e softwares de fabricantes (Razer Synapse, Logitech, Armoury Crate) via Windows Update.`nBenefício: Evita bloatware automático ao conectar mouse/teclado.`nEfeitos: Instale drivers opcionais manualmente se precisar.";
-                              TipEN="What it does: Prevents Windows from auto-installing vendor companion apps (Razer/Logitech/ASUS) when plugging peripherals.`nBenefit: Stops unwanted background bloatware.`nSide effects: Install peripheral software manually if needed." }
+                              TipPT="O que faz: Bloqueia o download automático de softwares de fabricantes via Windows Update.";
+                              TipEN="What it does: Prevents Windows from auto-installing vendor companion apps when plugging peripherals." }
     "ChkServicesMan"     = @{ PT="Serviços em Segundo Plano - Definir como Manual (?)"; EN="Background Services - Set to Manual (?)";
-                              TipPT="O que faz: Altera 10 serviços secundários seguros (Fax, Mapas, Relatório de Erros, Demonstração, Registro Remoto, etc.) para Manual.`nBenefício: Reduz processos ativos no boot e consumo de RAM.`nEfeitos: Nenhum serviço essencial do Windows é afetado.";
-                              TipEN="What it does: Sets 10 safe non-essential services (Fax, MapsBroker, WerSvc, RetailDemo, etc.) to Manual.`nBenefit: Fewer background processes at boot.`nSide effects: Core Windows features remain intact." }
+                              TipPT="O que faz: Altera 10 serviços secundários seguros para Manual.";
+                              TipEN="What it does: Sets 10 safe non-essential services to Manual." }
     "ChkTelemetry"       = @{ PT="Telemetria e Coleta de Dados - Desativar (?)"; EN="Telemetry & Data Collection - Disable (?)";
-                              TipPT="O que faz: Define AllowTelemetry=0 e desativa os serviços DiagTrack e dmwappushservice.`nBenefício: Menos tráfego de rede e CPU em segundo plano.`nEfeitos: Pode desativar o programa Windows Insider.";
-                              TipEN="What it does: Sets AllowTelemetry=0 and disables DiagTrack services.`nBenefit: Less background CPU/network overhead and better privacy.`nSide effects: May disable Windows Insider builds." }
+                              TipPT="O que faz: Define AllowTelemetry=0 e desativa DiagTrack e dmwappushservice.";
+                              TipEN="What it does: Sets AllowTelemetry=0 and disables DiagTrack services." }
     "ChkWidgets"         = @{ PT="Widgets da Barra de Tarefas - Remover (?)"; EN="Widgets (News & Interests) - Remove (?)";
-                              TipPT="O que faz: Desativa o painel de Widgets e Notícias da Barra de Tarefas.`nBenefício: Encerra processos WebView2 que consomem RAM continuamente.`nEfeitos: Remove o botão de clima/notícias da barra.";
-                              TipEN="What it does: Disables Taskbar Widgets / News and Interests.`nBenefit: Frees RAM used by background WebView2 processes.`nSide effects: Removes weather/news widget from taskbar." }
+                              TipPT="O que faz: Desativa o painel de Widgets e Notícias da Barra de Tarefas.";
+                              TipEN="What it does: Disables Taskbar Widgets / News and Interests." }
     "ChkWPBT"            = @{ PT="Tabela Binária da Plataforma (WPBT) - Desativar (?)"; EN="Windows Platform Binary Table (WPBT) - Disable (?)";
-                              TipPT="O que faz: Impede que o BIOS/UEFI da placa-mãe injete executáveis de fabricantes no Windows durante o boot.`nBenefício: Mais segurança e boot limpo.`nEfeitos: Nenhum.";
-                              TipEN="What it does: Blocks motherboard firmware from injecting vendor software during Windows boot.`nBenefit: Cleaner boot and better security.`nSide effects: None." }
+                              TipPT="O que faz: Impede que o BIOS/UEFI injete executáveis de fabricantes no Windows.";
+                              TipEN="What it does: Blocks motherboard firmware from injecting vendor software during boot." }
     "ChkSearchIdx"       = @{ PT="Indexação do Windows Search - Desativar (?)"; EN="Windows Search Indexing - Disable (?)";
-                              TipPT="O que faz: Desativa o serviço WSearch de indexação contínua de arquivos.`nBenefício: Elimina picos de leitura/escrita no disco durante jogos.`nEfeitos: A busca por conteúdo dentro de arquivos no Explorer fica mais lenta.";
-                              TipEN="What it does: Disables the WSearch continuous file indexing service.`nBenefit: Eliminates background disk I/O spikes during gaming.`nSide effects: File content searches in Explorer become slower." }
+                              TipPT="O que faz: Desativa o serviço WSearch de indexação contínua de arquivos.";
+                              TipEN="What it does: Disables the WSearch continuous file indexing service." }
 
-    # Coluna Esquerda - Advanced
     "ChkBgApps"          = @{ PT="Aplicativos da Loja em Segundo Plano - Desativar (?)"; EN="Background Store Apps - Disable (?)";
-                              TipPT="O que faz: Impede apps UWP da Microsoft Store de rodarem ocultos em segundo plano.`nBenefício: Menor consumo de RAM e CPU.`nEfeitos: Notificações de apps da Store (ex.: Mail/Clima) só aparecem ao abri-los.";
-                              TipEN="What it does: Prevents Microsoft Store UWP apps from running in the background.`nBenefit: Lower RAM/CPU usage.`nSide effects: Store app notifications only update when opened." }
+                              TipPT="O que faz: Impede apps UWP da Microsoft Store de rodarem ocultos em segundo plano.";
+                              TipEN="What it does: Prevents Microsoft Store UWP apps from running in the background." }
     "ChkOptTasks"        = @{ PT="Tarefas Agendadas de Telemetria - Desativar (?)"; EN="Optional Telemetry Scheduled Tasks - Disable (?)";
-                              TipPT="O que faz: Desativa tarefas agendadas de coleta (Compatibility Appraiser, CEIP, UsbCeip, Feedback).`nBenefício: Evita uso repentino de disco/CPU no meio do jogo.`nEfeitos: Nenhum impacto no sistema.";
-                              TipEN="What it does: Disables scheduled telemetry tasks (Compatibility Appraiser, CEIP, UsbCeip, Feedback).`nBenefit: Prevents sudden background CPU/disk spikes.`nSide effects: None." }
+                              TipPT="O que faz: Desativa tarefas agendadas de coleta (Compatibility Appraiser, CEIP, UsbCeip, Feedback).";
+                              TipEN="What it does: Disables scheduled telemetry tasks (Compatibility Appraiser, CEIP, UsbCeip, Feedback)." }
     "ChkReservedStorage" = @{ PT="Armazenamento Reservado do Windows - Desativar (?)"; EN="Windows Reserved Storage - Disable (?)";
-                              TipPT="O que faz: Desativa a reserva automática de ~7 GB usada pelo Windows Update.`nBenefício: Libera espaço valioso no SSD.`nEfeitos: Mantenha ao menos 10 GB livres ao instalar grandes updates do Windows.";
-                              TipEN="What it does: Disables the ~7 GB storage partition reserved for Windows Updates.`nBenefit: Reclaims SSD space.`nSide effects: Keep ~10 GB free before installing major feature updates." }
+                              TipPT="O que faz: Desativa a reserva automática de ~7 GB usada pelo Windows Update.";
+                              TipEN="What it does: Disables the ~7 GB storage partition reserved for Windows Updates." }
     "ChkExplorerGallery" = @{ PT="Galeria e Início no Explorer (Win 11) - Ocultar (?)"; EN="File Explorer Home & Gallery (Win 11) - Hide (?)";
-                              TipPT="O que faz: Remove os atalhos 'Galeria' e 'Início' do painel esquerdo do Explorer via HKCU (100% reversível).`nBenefício: Explorer mais limpo, rápido e direto em 'Este Computador'.`nEfeitos: Apenas estético; reversível a qualquer momento.";
-                              TipEN="What it does: Hides Gallery and Home clutter from the Win 11 Explorer sidebar safely via HKCU.`nBenefit: Cleaner, snappier File Explorer.`nSide effects: Cosmetic only; fully reversible." }
+                              TipPT="O que faz: Remove os atalhos 'Galeria' e 'Início' do painel esquerdo do Explorer.";
+                              TipEN="What it does: Hides Gallery and Home clutter from the Win 11 Explorer sidebar." }
     "ChkGameDVR"         = @{ PT="GameDVR e Captura Xbox - Desativar (?)"; EN="GameDVR & Xbox Background Capture - Disable (?)";
-                              TipPT="O que faz: Desativa a gravação automática em segundo plano da Game Bar.`nBenefício: Reduz input lag, melhora 1% Low FPS e economiza recursos da GPU.`nEfeitos: Desativa gravação de clipes pela tecla Win+Alt+G.";
-                              TipEN="What it does: Disables Xbox Game Bar background recording.`nBenefit: Lower input lag and smoother frame times.`nSide effects: Disables Win+Alt+G background clip recording." }
+                              TipPT="O que faz: Desativa a gravação automática em segundo plano da Game Bar.";
+                              TipEN="What it does: Disables Xbox Game Bar background recording." }
     "ChkIPv4Pref"        = @{ PT="Rede IPv6 - Definir IPv4 como Preferencial (?)"; EN="IPv6 - Set IPv4 as Preferred (?)";
-                              TipPT="O que faz: Define DisabledComponents=32 para priorizar IPv4 sem quebrar a pilha IPv6.`nBenefício: Evita atrasos de resolução DNS em provedores com IPv6 mal roteado.`nEfeitos: Seguro; mantém compatibilidade com todos os serviços do Windows.";
-                              TipEN="What it does: Sets DisabledComponents=32 to prefer IPv4 without breaking IPv6.`nBenefit: Avoids DNS routing delays on unstable IPv6 ISPs.`nSide effects: Safe and Microsoft-recommended method." }
+                              TipPT="O que faz: Define DisabledComponents=32 para priorizar IPv4 sem quebrar o IPv6.";
+                              TipEN="What it does: Sets DisabledComponents=32 to prefer IPv4 without breaking IPv6." }
     "ChkTeredo"          = @{ PT="Túnel Teredo IPv6 - Desativar (?)"; EN="Teredo Tunneling - Disable (?)";
-                              TipPT="O que faz: Desativa a interface de tunelamento legado Teredo via netsh.`nBenefício: Reduz sobrecarga de rede e superfície de exposição.`nEfeitos: Pode afetar Xbox Party Chat ou multiplayer em jogos antigos da Xbox Live (ex.: Forza Horizon 4).";
-                              TipEN="What it does: Disables legacy Teredo IPv6 tunneling via netsh.`nBenefit: Cleaner network stack.`nSide effects: May affect Xbox Party Chat or older Xbox Live P2P games." }
+                              TipPT="O que faz: Desativa a interface de tunelamento legado Teredo via netsh.";
+                              TipEN="What it does: Disables legacy Teredo IPv6 tunneling via netsh." }
     "ChkMenuDelay"       = @{ PT="Atraso de Menus (Zero Delay 0ms) - Ativar (?)"; EN="MenuShowDelay (Zero Delay 0ms) - Enable (?)";
-                              TipPT="O que faz: Muda MenuShowDelay de 400ms para 0ms.`nBenefício: Menus e submenus do Windows abrem instantaneamente.`nEfeitos: Nenhum.";
-                              TipEN="What it does: Changes MenuShowDelay from 400ms to 0ms.`nBenefit: Menus open instantaneously.`nSide effects: None." }
+                              TipPT="O que faz: Muda MenuShowDelay de 400ms para 0ms.";
+                              TipEN="What it does: Changes MenuShowDelay from 400ms to 0ms." }
     "ChkEdgeDebloat"     = @{ PT="Processos em Segundo Plano do Edge - Desativar (?)"; EN="Microsoft Edge Background Processes - Disable (?)";
-                              TipPT="O que faz: Desativa Startup Boost e execução em segundo plano do Edge via Políticas.`nBenefício: Impede o Edge de ficar consumindo RAM após fechar o navegador.`nEfeitos: A primeira abertura do Edge leva uma fração de segundo a mais.";
-                              TipEN="What it does: Disables Edge Startup Boost and Background Mode via Policies.`nBenefit: Stops Edge from consuming RAM after closing.`nSide effects: Slightly slower cold launch of Edge." }
+                              TipPT="O que faz: Desativa Startup Boost e execução em segundo plano do Edge.";
+                              TipEN="What it does: Disables Edge Startup Boost and Background Mode via Policies." }
     "ChkNetThrottle"     = @{ PT="Limitação de Rede (Network Throttling) - Otimizar (?)"; EN="Network Throttling Index - Optimize (?)";
-                              TipPT="O que faz: Define NetworkThrottlingIndex=0xFFFFFFFF e SystemResponsiveness=0.`nBenefício: Remove o limite de 10 pacotes/ms em tarefas multimídia para menor latência em jogos.`nEfeitos: Nenhum negativo em PCs modernos.";
-                              TipEN="What it does: Sets NetworkThrottlingIndex=0xFFFFFFFF and SystemResponsiveness=0.`nBenefit: Removes Windows multimedia packet throttling for gaming.`nSide effects: None on modern PCs." }
+                              TipPT="O que faz: Define NetworkThrottlingIndex=0xFFFFFFFF e SystemResponsiveness=0.";
+                              TipEN="What it does: Sets NetworkThrottlingIndex=0xFFFFFFFF and SystemResponsiveness=0." }
     "ChkPowerThrottle"   = @{ PT="Estrangulamento de Energia (Power Throttling) - Desativar (?)"; EN="Power Throttling - Disable (?)";
-                              TipPT="O que faz: Define PowerThrottlingOff=1 no controle de energia da CPU.`nBenefício: Evita que o Windows reduza o clock de processos ou jogos em segundo plano.`nEfeitos: Pode aumentar levemente o consumo de bateria em notebooks.";
-                              TipEN="What it does: Sets PowerThrottlingOff=1.`nBenefit: Prevents Windows from downclocking processes/games.`nSide effects: Slightly higher battery drain on laptops." }
+                              TipPT="O que faz: Define PowerThrottlingOff=1 no controle de energia da CPU.";
+                              TipEN="What it does: Sets PowerThrottlingOff=1." }
     "ChkClassicContext"  = @{ PT="Menu de Contexto Clássico (Win 11) - Ativar (?)"; EN="Right-Click Menu Classic Layout (Win 11) - Enable (?)";
-                              TipPT="O que faz: Restaura o menu de botão direito completo no Windows 11.`nBenefício: Elimina o clique extra em 'Mostrar mais opções'.`nEfeitos: Requer reiniciar o Explorer ou o PC para surtir efeito.";
-                              TipEN="What it does: Restores the full classic right-click context menu on Win 11.`nBenefit: No more clicking 'Show more options'.`nSide effects: Requires Explorer restart or reboot." }
+                              TipPT="O que faz: Restaura o menu de botão direito completo no Windows 11.";
+                              TipEN="What it does: Restores the full classic right-click context menu on Win 11." }
     "ChkStorageSense"    = @{ PT="Sensor de Armazenamento Automático - Desativar (?)"; EN="Storage Sense Automatic Cleanup - Disable (?)";
-                              TipPT="O que faz: Desativa a varredura periódica automática de disco do Windows.`nBenefício: Evita uso inesperado de SSD em segundo plano.`nEfeitos: Use a aba Limpeza Profunda quando quiser limpar.";
-                              TipEN="What it does: Disables automatic periodic Storage Sense scans.`nBenefit: Prevents unexpected background disk usage.`nSide effects: Use the Deep Clean tab whenever you want to clean." }
+                              TipPT="O que faz: Desativa a varredura periódica automática de disco do Windows.";
+                              TipEN="What it does: Disables automatic periodic Storage Sense scans." }
     "ChkSvcHost"         = @{ PT="Divisão de Processos SvcHost - Ajustar para sua RAM (?)"; EN="SvcHost Split Threshold - Match Physical RAM (?)";
-                              TipPT="O que faz: Ajusta SvcHostSplitThresholdInKB exatamente para a quantidade de RAM instalada.`nBenefício: Reduz dezenas de processos svchost.exe fragmentados no Gerenciador de Tarefas.`nEfeitos: Requer reinicialização; 100% reversível.";
-                              TipEN="What it does: Matches SvcHostSplitThresholdInKB to your installed physical RAM.`nBenefit: Reduces fragmented svchost.exe process count.`nSide effects: Requires reboot; fully reversible." }
+                              TipPT="O que faz: Ajusta SvcHostSplitThresholdInKB exatamente para a sua RAM instalada.";
+                              TipEN="What it does: Matches SvcHostSplitThresholdInKB to your installed physical RAM." }
     "ChkUsbSuspend"      = @{ PT="Suspensão Seletiva USB - Desativar (?)"; EN="USB Selective Suspend - Disable (?)";
-                              TipPT="O que faz: Impede o Windows de desligar portas USB ociosas para economizar energia.`nBenefício: Evita micro-travamentos ou desconexões em mouses 1000Hz/4000Hz/8000Hz e headsets USB.`nEfeitos: Leve aumento de consumo em notebooks na bateria.";
-                              TipEN="What it does: Prevents Windows from powering down idle USB ports.`nBenefit: Eliminates micro-stutters/disconnects on high-polling gaming mice and headsets.`nSide effects: Minor battery impact on laptops." }
+                              TipPT="O que faz: Impede o Windows de desligar portas USB ociosas.";
+                              TipEN="What it does: Prevents Windows from powering down idle USB ports." }
     "ChkBestPerf"        = @{ PT="Efeitos Visuais - Ajustar para Melhor Desempenho (?)"; EN="Visual Effects - Set to Best Performance (?)";
-                              TipPT="O que faz: Desativa animações pesadas de janelas e transparências desnecessárias.`nBenefício: Resposta de interface instantânea e menor carga no DWM.`nEfeitos: Janelas abrem sem animação suave.";
-                              TipEN="What it does: Disables heavy window animations and shadows.`nBenefit: Snappier desktop and lower DWM overhead.`nSide effects: Removes fade/slide window animations." }
+                              TipPT="O que faz: Desativa animações pesadas de janelas e transparências desnecessárias.";
+                              TipEN="What it does: Disables heavy window animations and shadows." }
     "ChkWinAI"           = @{ PT="Windows AI (Copilot e Recall) - Desativar (?)"; EN="Windows AI (Copilot & Recall) - Disable (?)";
-                              TipPT="O que faz: Desativa políticas do Windows Copilot e impede capturas de tela do Windows Recall.`nBenefício: Economiza RAM, privacidade total e menos processos IA em segundo plano.`nEfeitos: Remove o botão e atalho do Copilot.";
-                              TipEN="What it does: Disables Windows Copilot and blocks Windows Recall snapshots via policy.`nBenefit: Better privacy and lower RAM usage.`nSide effects: Removes Copilot integration." }
+                              TipPT="O que faz: Desativa políticas do Windows Copilot e impede capturas do Windows Recall.";
+                              TipEN="What it does: Disables Windows Copilot and blocks Windows Recall snapshots." }
 
-    # Coluna Esquerda - Security & CPU Overhead
     "ChkBitLocker"       = @{ PT="BitLocker (Criptografia de Disco) - Desativar [CONFIRMAÇÃO] (?)"; EN="BitLocker (Drive Encryption) - Disable [CONFIRM] (?)";
-                              TipPT="O que faz: Descriptografa a unidade do sistema (C:) se o BitLocker estiver ativo.`nBenefício: Pode aumentar a velocidade de leitura/escrita aleatória em SSDs NVMe.`nRISCO: Seus arquivos ficam sem criptografia em caso de roubo físico do PC.";
-                              TipEN="What it does: Decrypts the system drive (C:) if BitLocker is enabled.`nBenefit: Can improve random NVMe SSD read/write latency.`nRISK: Drive data is unencrypted if the PC is physically stolen." }
+                              TipPT="Descriptografa a unidade do sistema (C:) se o BitLocker estiver ativo.";
+                              TipEN="Decrypts the system drive (C:) if BitLocker is enabled." }
     "ChkHVCI"            = @{ PT="HVCI (Integridade de Memória / Core Isolation) - Desativar [REINICIAR] (?)"; EN="HVCI (Memory Integrity / Core Isolation) - Disable [RESTART] (?)";
-                              TipPT="O que faz: Desativa a Integridade de Memória baseada em virtualização (HVCI).`nBenefício: Ganhos reais de 5% a 15% de FPS em jogos competitivos e menor latência de CPU.`nRISCO/COMPATIBILIDADE: Reduz proteção contra drivers maliciosos. ATENÇÃO: VALORANT (Vanguard) ou FACEIT podem exigir HVCI ativo em algumas contas/hardware. Desmarque e clique em Aplicar ou Reverter para reativar.";
-                              TipEN="What it does: Disables Hypervisor-Protected Code Integrity (HVCI).`nBenefit: Measurable 5-15% FPS gain and lower CPU latency.`nRISK/COMPATIBILITY: Lower kernel driver protection. WARNING: VALORANT Vanguard or FACEIT may require HVCI enabled on certain systems. Uncheck and click Apply or Revert to re-enable." }
+                              TipPT="Desativa HVCI para ganhar FPS. Desmarque e clique em Aplicar ou Reverter para reativar.";
+                              TipEN="Disables HVCI for higher FPS. Uncheck and click Apply or Revert to re-enable." }
     "ChkCpuMitigations"  = @{ PT="Mitigações de CPU (Spectre/Meltdown) - Desativar [REINICIAR] (?)"; EN="CPU Mitigations (Spectre/Meltdown) - Disable [RESTART] (?)";
-                              TipPT="O que faz: Define FeatureSettingsOverride=3 e Mask=3 para desativar mitigações de software Spectre v2 e Meltdown.`nBenefício: Reduz overhead de chamadas de sistema (syscalls) e melhora FPS mínimo.`nRISCO: Reduz proteção contra vulnerabilidades de execução especulativa. Requer reinicialização; 100% reversível.";
-                              TipEN="What it does: Sets FeatureSettingsOverride=3 & Mask=3 to disable Spectre v2 / Meltdown software mitigations.`nBenefit: Reduces syscall overhead and improves 1% low FPS.`nRISK: Lowers protection against speculative execution side-channel attacks. Requires reboot; fully reversible." }
+                              TipPT="Desativa mitigações Spectre/Meltdown para menor latência de syscalls.";
+                              TipEN="Disables Spectre/Meltdown mitigations for lower syscall overhead." }
 
-    # Coluna Direita - Toggle Switches
     "TglBsod"            = @{ PT="Tela Azul Detalhada (BSoD Verbose)"; EN="BSoD Verbose Mode"; TipPT="Exibe códigos técnicos detalhados em caso de Tela Azul."; TipEN="Shows detailed technical parameters on Blue Screen errors." }
     "TglDarkWin"         = @{ PT="Tema Escuro para o Windows"; EN="Dark Theme for Windows"; TipPT="Alterna o tema escuro nativo do Windows e aplicativos."; TipEN="Toggles Windows native Dark Mode for system and apps." }
     "TglLongPaths"       = @{ PT="Habilitar Caminhos Longos (>260 caracteres)"; EN="Enable Long Paths (>260 chars)"; TipPT="Remove o limite legado de 260 caracteres em nomes de pastas/arquivos."; TipEN="Removes legacy 260-character file path limit." }
-    "TglFastStart"       = @{ PT="Inicialização Rápida (Fast Startup)"; EN="Fast Startup (Hiberboot)"; TipPT="Desativar garante um desligamento completo do kernel (recomendado para estabilidade em jogos)."; TipEN="Disabling ensures a full clean kernel reboot (recommended for gaming stability)." }
-    "TglFileExt"         = @{ PT="Mostrar Extensões de Arquivos no Explorer"; EN="File Explorer File Extensions"; TipPT="Exibe .exe, .zip, .ps1 no Windows Explorer (útil para segurança)."; TipEN="Shows file extensions like .exe and .zip in Explorer." }
+    "TglFastStart"       = @{ PT="Inicialização Rápida (Fast Startup)"; EN="Fast Startup (Hiberboot)"; TipPT="Desativar garante um desligamento completo do kernel."; TipEN="Disabling ensures a full clean kernel reboot." }
+    "TglFileExt"         = @{ PT="Mostrar Extensões de Arquivos no Explorer"; EN="File Explorer File Extensions"; TipPT="Exibe .exe, .zip, .ps1 no Windows Explorer."; TipEN="Shows file extensions like .exe and .zip in Explorer." }
     "TglHiddenFiles"     = @{ PT="Mostrar Arquivos Ocultos no Explorer"; EN="File Explorer Hidden Files"; TipPT="Exibe pastas ocultas como AppData e ProgramData."; TipEN="Reveals hidden system folders like AppData and ProgramData." }
-    "TglGameMode"        = @{ PT="Modo de Jogo (Game Mode)"; EN="Game Mode"; TipPT="Prioriza recursos de CPU/GPU para jogos e pausa updates durante partidas."; TipEN="Prioritizes CPU/GPU for games and suppresses updates while playing." }
+    "TglGameMode"        = @{ PT="Modo de Jogo (Game Mode)"; EN="Game Mode"; TipPT="Prioriza recursos de CPU/GPU para jogos."; TipEN="Prioritizes CPU/GPU for games." }
     "TglAcrylic"         = @{ PT="Desfoque Acrílico na Tela de Login"; EN="Logon Screen Acrylic Blur"; TipPT="Ativa ou remove o efeito de desfoque na tela de bloqueio."; TipEN="Toggles the acrylic blur effect on the Windows sign-in screen." }
-    "TglVerboseLogon"    = @{ PT="Mensagens Detalhadas de Inicialização/Logon"; EN="Logon Verbose Mode"; TipPT="Exibe qual serviço exato está iniciando ou encerrando durante o boot."; TipEN="Displays detailed status messages during startup and shutdown." }
-    "TglMouseAccel"      = @{ PT="Aceleração do Ponteiro do Mouse"; EN="Mouse Acceleration"; TipPT="Desative para precisão linear 1:1 em jogos competitivos de FPS."; TipEN="Turn OFF for true 1:1 raw linear mouse movement in FPS games." }
-    "TglMmProfile"       = @{ PT="Perfil Multimídia de Jogos (MMCSS)"; EN="Multimedia Gaming Profile (MMCSS)"; TipPT="Define GPU Priority=8, Priority=6 e Scheduling Category=High para jogos."; TipEN="Sets GPU Priority=8, Priority=6, and High scheduling category for games." }
+    "TglVerboseLogon"    = @{ PT="Mensagens Detalhadas de Inicialização/Logon"; EN="Logon Verbose Mode"; TipPT="Exibe qual serviço está iniciando/encerrando durante o boot."; TipEN="Displays detailed status messages during startup and shutdown." }
+    "TglMouseAccel"      = @{ PT="Aceleração do Ponteiro do Mouse"; EN="Mouse Acceleration"; TipPT="Desative para precisão linear 1:1 em jogos competitivos."; TipEN="Turn OFF for true 1:1 raw linear mouse movement in FPS games." }
+    "TglMmProfile"       = @{ PT="Perfil Multimídia de Jogos (MMCSS)"; EN="Multimedia Gaming Profile (MMCSS)"; TipPT="Define GPU Priority=8, Priority=6 e Scheduling Category=High."; TipEN="Sets GPU Priority=8, Priority=6, and High scheduling category." }
     "TglNumLock"         = @{ PT="Ativar Num Lock ao Ligar"; EN="Num Lock on Startup"; TipPT="Mantém o teclado numérico ativado automaticamente no boot."; TipEN="Automatically enables Num Lock when Windows starts." }
-    "TglBingSearch"      = @{ PT="Pesquisa Web do Bing no Menu Iniciar"; EN="Start Menu Bing Search"; TipPT="Desative para deixar a busca do Menu Iniciar 100% local e instantânea."; TipEN="Turn OFF to make Start Menu search 100% local and instant." }
+    "TglBingSearch"      = @{ PT="Pesquisa Web do Bing no Menu Iniciar"; EN="Start Menu Bing Search"; TipPT="Desative para deixar a busca do Menu Iniciar 100% local."; TipEN="Turn OFF to make Start Menu search 100% local and instant." }
     "TglStartRecs"       = @{ PT="Recomendações no Menu Iniciar"; EN="Start Menu Recommendations"; TipPT="Desative para remover arquivos recentes e sugestões do Menu Iniciar."; TipEN="Turn OFF to hide recommended files and tips in Start Menu." }
-    "TglStickyKeys"      = @{ PT="Atalho das Teclas de Aderência (5x Shift)"; EN="Sticky Keys Shortcut (5x Shift)"; TipPT="Desative para nunca mais abrir o alerta irritante ao apertar Shift 5 vezes jogando."; TipEN="Turn OFF to prevent the popup when pressing Shift 5 times in-game." }
+    "TglStickyKeys"      = @{ PT="Atalho das Teclas de Aderência (5x Shift)"; EN="Sticky Keys Shortcut (5x Shift)"; TipPT="Desative para nunca mais abrir o alerta ao apertar Shift 5x jogando."; TipEN="Turn OFF to prevent the popup when pressing Shift 5 times in-game." }
     "TglCenterTaskbar"   = @{ PT="Ícones Centralizados na Barra de Tarefas"; EN="Taskbar Centered Icons"; TipPT="Alterna os ícones da Barra de Tarefas do Win 11 entre Centro e Esquerda."; TipEN="Switches Win 11 taskbar alignment between Center and Left." }
     "TglSearchIcon"      = @{ PT="Ícone de Pesquisa na Barra de Tarefas"; EN="Taskbar Search Icon"; TipPT="Mostra ou oculta a lupa/caixa de pesquisa na Barra de Tarefas."; TipEN="Shows or hides the search box/icon on the taskbar." }
     "TglTaskView"        = @{ PT="Botão Visão de Tarefas na Barra"; EN="Taskbar Task View Icon"; TipPT="Mostra ou oculta o botão de múltiplas áreas de trabalho."; TipEN="Shows or hides the Task View button on the taskbar." }
     "TglSnap"            = @{ PT="Ajuste Automático de Janelas (Window Snap)"; EN="Window Snapping"; TipPT="Permite encaixar janelas nas bordas da tela ao arrastá-las."; TipEN="Toggles automatic window snapping to screen edges." }
 
-    # Aba Limpeza Profunda (DISM++ - Todas as Categorias e Itens)
-    "CatExpired"           = @{ PT="Arquivos Expirados"; EN="Expired Files"; TipPT="Componentes antigos substituídos do Windows, resíduos do DISM e backups de versões antigas do Chrome."; TipEN="Superseded Windows components, DISM leftovers, and old Chrome version backups." }
-    "ClnWinSxSSuperseded"  = @{ PT="Assemblies Substituído no WinSxS (?)"; EN="Superseded Assemblies in WinSxS (?)";
-                                TipPT="Executa DISM /StartComponentCleanup para remover versões antigas de componentes do Windows substituídos por atualizações.";
-                                TipEN="Runs DISM /StartComponentCleanup to remove old superseded Windows component versions." }
-    "ClnDismResidual"      = @{ PT="Arquivos residuais de versões anteriores do Dism (?)"; EN="Residual files from previous Dism versions (?)";
-                                TipPT="Remove logs antigos (.bak) e pastas temporárias residuais geradas pelo DISM.";
-                                TipEN="Removes old .bak logs and residual temporary folders left behind by DISM." }
-    "ClnChromeOldBackup"   = @{ PT="Arquivos de backup de versão antiga do Chrome (?)"; EN="Old Chrome version backup files (?)";
-                                TipPT="Remove diretórios de versões anteriores e instaladores antigos armazenados pelo Google Chrome.";
-                                TipEN="Removes old browser version folders and installer backups cached by Google Chrome." }
+    # Aba Limpeza Profunda
+    "CatExpired"           = @{ PT="Arquivos Expirados"; EN="Expired Files"; TipPT="Componentes substituídos do Windows, resíduos do DISM e backups antigos do Chrome."; TipEN="Superseded Windows components, DISM leftovers, and old Chrome backups." }
+    "ClnWinSxSSuperseded"  = @{ PT="Assemblies Substituído no WinSxS (?)"; EN="Superseded Assemblies in WinSxS (?)"; TipPT="Executa DISM /StartComponentCleanup para remover componentes antigos substituídos."; TipEN="Runs DISM /StartComponentCleanup to remove old superseded components." }
+    "ClnDismResidual"      = @{ PT="Arquivos residuais de versões anteriores do Dism (?)"; EN="Residual files from previous Dism versions (?)"; TipPT="Remove logs antigos (.bak) e pastas temporárias do DISM."; TipEN="Removes old .bak logs and temporary folders from DISM." }
+    "ClnChromeOldBackup"   = @{ PT="Arquivos de backup de versão antiga do Chrome (?)"; EN="Old Chrome version backup files (?)"; TipPT="Remove diretórios de versões anteriores e instaladores antigos do Google Chrome."; TipEN="Removes old browser version folders and installer backups from Google Chrome." }
 
-    "CatSystem"            = @{ PT="Sistema"; EN="System"; TipPT="Relatórios de erros, logs de eventos, histórico do Windows Update, pacotes Appx danificados e pontos de restauração."; TipEN="Error reports, event logs, Windows Update history, damaged Appx packages, and restore points." }
-    "ClnWerReports"        = @{ PT="Relatório de Erros do Windows (?)"; EN="Windows Error Reporting (?)";
-                                TipPT="Limpa relatórios de falhas e arquivos de diagnóstico acumulados pelo Windows Error Reporting (WER).";
-                                TipEN="Clears crash reports and diagnostic archives accumulated by Windows Error Reporting (WER)." }
-    "ClnWinEvents"         = @{ PT="Eventos do Windows (?)"; EN="Windows Event Logs (?)";
-                                TipPT="Limpa os logs do Visualizador de Eventos do Windows (Aplicativo, Sistema, Segurança, Instalação).";
-                                TipEN="Clears Windows Event Viewer logs (Application, System, Setup)." }
-    "ClnWinUpdateHistory"  = @{ PT="Histórico de instalação do Windows Update (?)"; EN="Windows Update Installation History (?)";
-                                TipPT="Remove logs antigos do banco de dados DataStore e histórico de instalação do Windows Update.";
-                                TipEN="Removes old DataStore logs and installation history logs from Windows Update." }
-    "ClnDamagedAppx"       = @{ PT="Damaged Appx (?)"; EN="Damaged Appx Packages (?)";
-                                TipPT="Limpa caches temporários e resíduos de pacotes UWP/Appx corrompidos ou pendentes.";
-                                TipEN="Cleans temporary caches and leftovers from damaged or stalled UWP/Appx packages." }
-    "ClnRestorePoints"     = @{ PT="Pontos de restauração do sistema (?)"; EN="System Restore Points (?)";
-                                TipPT="ATENÇÃO: Remove todos os Pontos de Restauração do Sistema (cópias de sombra VSS) para liberar vários GBs.";
-                                TipEN="WARNING: Deletes all System Restore Points (VSS shadow copies) to reclaim several GBs." }
+    "CatSystem"            = @{ PT="Sistema"; EN="System"; TipPT="Relatórios de erros, logs de eventos, histórico do Windows Update, pacotes Appx e pontos de restauração."; TipEN="Error reports, event logs, Windows Update history, damaged Appx, and restore points." }
+    "ClnWerReports"        = @{ PT="Relatório de Erros do Windows (?)"; EN="Windows Error Reporting (?)"; TipPT="Limpa relatórios de falhas e arquivos de diagnóstico do WER."; TipEN="Clears crash reports and diagnostic archives from WER." }
+    "ClnWinEvents"         = @{ PT="Eventos do Windows (?)"; EN="Windows Event Logs (?)"; TipPT="Limpa os logs do Visualizador de Eventos do Windows."; TipEN="Clears Windows Event Viewer logs." }
+    "ClnWinUpdateHistory"  = @{ PT="Histórico de instalação do Windows Update (?)"; EN="Windows Update Installation History (?)"; TipPT="Remove logs antigos do banco de dados DataStore do Windows Update."; TipEN="Removes old DataStore logs from Windows Update." }
+    "ClnDamagedAppx"       = @{ PT="Damaged Appx (?)"; EN="Damaged Appx Packages (?)"; TipPT="Limpa caches temporários e resíduos de pacotes UWP/Appx."; TipEN="Cleans temporary caches and leftovers from UWP/Appx packages." }
+    "ClnRestorePoints"     = @{ PT="Pontos de restauração do sistema (?)"; EN="System Restore Points (?)"; TipPT="ATENÇÃO: Remove todos os Pontos de Restauração do Sistema (VSS)."; TipEN="WARNING: Deletes all System Restore Points (VSS)." }
 
-    "CatCache"             = @{ PT="Arquivos de Cache"; EN="Cache Files"; TipPT="Caches de download do Windows Update, Delivery Optimization, RDP, .NET, Prefetch, Miniaturas e WinINet."; TipEN="Windows Update download cache, Delivery Optimization, RDP, .NET, Prefetch, Thumbnails, and WinINet caches." }
-    "ClnWinDownloadCache"  = @{ PT="Cache de download do Windows (?)"; EN="Windows Download Cache (?)";
-                                TipPT="Limpa os pacotes baixados em SoftwareDistribution\Download pelo Windows Update.";
-                                TipEN="Clears downloaded update installers inside SoftwareDistribution\Download." }
-    "ClnDeliveryOptCache"  = @{ PT="Delivery Optimization Cache (?)"; EN="Delivery Optimization Cache (?)";
-                                TipPT="Remove arquivos em cache do serviço Otimização de Entrega (P2P de atualizações e Store).";
-                                TipEN="Removes cached files stored by the Delivery Optimization service." }
-    "ClnRdpClientCache"    = @{ PT="Terminal Server Client Cache (?)"; EN="Terminal Server Client Cache (?)";
-                                TipPT="Limpa o cache de bitmaps e sessões da Área de Trabalho Remota (mstsc.exe).";
-                                TipEN="Clears Remote Desktop Connection (mstsc.exe) bitmap cache files." }
-    "ClnNetAssemblyCache"  = @{ PT="Cache do NET assembly (?)"; EN=".NET Assembly Cache (?)";
-                                TipPT="Remove arquivos temporários compilados e logs de uso do .NET Framework / CLR.";
-                                TipEN="Removes temporary compiled files and usage logs from .NET Framework / CLR." }
-    "ClnPrefetchFiles"     = @{ PT="Arquivos prefetch do Windows (?)"; EN="Windows Prefetch Files (?)";
-                                TipPT="Limpa arquivos .pf antigos da pasta C:\Windows\Prefetch (o Windows recria apenas os usados recentemente).";
-                                TipEN="Clears old .pf files from C:\Windows\Prefetch (Windows automatically rebuilds active ones)." }
-    "ClnThumbnailCache"    = @{ PT="Cache de Miniatura (Requer reiniciar Explorer) (?)"; EN="Thumbnail Cache (Requires Explorer restart) (?)";
-                                TipPT="Limpa thumbcache_*.db e iconcache_*.db corrompidos ou antigos. O Explorer será reiniciado automaticamente.";
-                                TipEN="Clears thumbcache_*.db and iconcache_*.db files. Windows Explorer will automatically restart." }
-    "ClnWinInetWebCache"   = @{ PT="Cache Web do WinINet (?)"; EN="WinINet Web Cache (?)";
-                                TipPT="Limpa o cache de arquivos temporários da internet da API nativa WinINet.";
-                                TipEN="Clears temporary internet cache files managed by the native WinINet API." }
-    "ClnWinInetCookies"    = @{ PT="Cookies do WinINet (?)"; EN="WinINet Cookies (?)";
-                                TipPT="Limpa cookies armazenados pela pilha WinINet do Windows.";
-                                TipEN="Clears cookies stored by the Windows WinINet stack." }
+    "CatCache"             = @{ PT="Arquivos de Cache"; EN="Cache Files"; TipPT="Caches de download do Windows Update, Delivery Optimization, RDP, .NET, Prefetch, Miniaturas e WinINet."; TipEN="Windows Update, Delivery Optimization, RDP, .NET, Prefetch, Thumbnails, and WinINet caches." }
+    "ClnWinDownloadCache"  = @{ PT="Cache de download do Windows (?)"; EN="Windows Download Cache (?)"; TipPT="Limpa os pacotes baixados em SoftwareDistribution\Download."; TipEN="Clears downloaded update installers inside SoftwareDistribution\Download." }
+    "ClnDeliveryOptCache"  = @{ PT="Delivery Optimization Cache (?)"; EN="Delivery Optimization Cache (?)"; TipPT="Remove arquivos em cache do serviço Otimização de Entrega."; TipEN="Removes cached files stored by the Delivery Optimization service." }
+    "ClnRdpClientCache"    = @{ PT="Terminal Server Client Cache (?)"; EN="Terminal Server Client Cache (?)"; TipPT="Limpa o cache de bitmaps da Área de Trabalho Remota (mstsc.exe)."; TipEN="Clears Remote Desktop Connection bitmap cache files." }
+    "ClnNetAssemblyCache"  = @{ PT="Cache do NET assembly (?)"; EN=".NET Assembly Cache (?)"; TipPT="Remove arquivos temporários compilados e logs de uso do .NET Framework."; TipEN="Removes temporary compiled files and usage logs from .NET Framework." }
+    "ClnPrefetchFiles"     = @{ PT="Arquivos prefetch do Windows (?)"; EN="Windows Prefetch Files (?)"; TipPT="Limpa arquivos .pf antigos da pasta C:\Windows\Prefetch."; TipEN="Clears old .pf files from C:\Windows\Prefetch." }
+    "ClnThumbnailCache"    = @{ PT="Cache de Miniatura (Requer reiniciar Explorer) (?)"; EN="Thumbnail Cache (Requires Explorer restart) (?)"; TipPT="Limpa thumbcache_*.db e iconcache_*.db e reinicia o Explorer."; TipEN="Clears thumbcache_*.db and iconcache_*.db and restarts Explorer." }
+    "ClnWinInetWebCache"   = @{ PT="Cache Web do WinINet (?)"; EN="WinINet Web Cache (?)"; TipPT="Limpa o cache de arquivos temporários da API WinINet."; TipEN="Clears temporary internet cache files managed by WinINet." }
+    "ClnWinInetCookies"    = @{ PT="Cookies do WinINet (?)"; EN="WinINet Cookies (?)"; TipPT="Limpa cookies armazenados pela pilha WinINet do Windows."; TipEN="Clears cookies stored by the Windows WinINet stack." }
 
-    "CatApps"              = @{ PT="Aplicações"; EN="Applications"; TipPT="Caches internos de pacotes da Store e histórico de detecções do Windows Defender."; TipEN="Internal Store package caches and Windows Defender protection history." }
-    "ClnPackageCache"      = @{ PT="Pasta de cache de pacote (?)"; EN="Package Cache Folder (?)";
-                                TipPT="Limpa caches locais temporários de pacotes UWP/Store em LocalCache.";
-                                TipEN="Clears temporary local caches inside UWP/Store app LocalCache folders." }
-    "ClnDefenderHistory"   = @{ PT="Windows Defender Histórico de Proteção (?)"; EN="Windows Defender Protection History (?)";
-                                TipPT="Limpa o histórico de verificações e detecções antigas do Microsoft Defender.";
-                                TipEN="Clears old scan logs and protection detection history from Microsoft Defender." }
+    "CatApps"              = @{ PT="Aplicações"; EN="Applications"; TipPT="Caches internos de pacotes da Store e histórico do Windows Defender."; TipEN="Internal Store package caches and Windows Defender protection history." }
+    "ClnPackageCache"      = @{ PT="Pasta de cache de pacote (?)"; EN="Package Cache Folder (?)"; TipPT="Limpa caches locais temporários de pacotes UWP/Store em LocalCache."; TipEN="Clears temporary local caches inside UWP/Store app LocalCache folders." }
+    "ClnDefenderHistory"   = @{ PT="Windows Defender Histórico de Proteção (?)"; EN="Windows Defender Protection History (?)"; TipPT="Limpa o histórico de verificações e detecções antigas do Microsoft Defender."; TipEN="Clears old scan logs and protection history from Microsoft Defender." }
 
-    "CatTemp"              = @{ PT="Arquivos Temporários"; EN="Temporary Files"; TipPT="Temporários do WinSxS, Logs do Windows, Temp, Lixeira, Crash Dumps (.dmp), resíduos de atualização e IDM."; TipEN="WinSxS temp, Windows Logs, Temp folders, Recycle Bin, Crash Dumps (.dmp), upgrade junk, and IDM temp files." }
-    "ClnWinSxSTemp"        = @{ PT="Arquivos Temporários WinSxS (?)"; EN="WinSxS Temporary Files (?)";
-                                TipPT="Remove arquivos temporários pendentes em C:\Windows\WinSxS\Temp.";
-                                TipEN="Removes pending temporary files inside C:\Windows\WinSxS\Temp." }
-    "ClnWindowsLogs"       = @{ PT="Log do Windows (?)"; EN="Windows Logs (?)";
-                                TipPT="Limpa arquivos de log antigos (.log) em Windows\Logs (CBS, DISM) e Panther.";
-                                TipEN="Clears old .log files in Windows\Logs (CBS, DISM) and Panther." }
-    "ClnTempFiles"         = @{ PT="Arquivos Temporários (?)"; EN="Temporary Files (?)";
-                                TipPT="Limpa arquivos temporários do usuário (%TEMP%) e do sistema (C:\Windows\Temp).";
-                                TipEN="Clears user (%TEMP%) and system (C:\Windows\Temp) temporary files." }
-    "ClnRecycleBin"        = @{ PT="Estação de reciclagem (?)"; EN="Recycle Bin (?)";
-                                TipPT="Esvazia completamente a Lixeira de todas as unidades.";
-                                TipEN="Permanently empties the Recycle Bin across all drives." }
-    "ClnCrashDumps"        = @{ PT="Arquivos de despejo (.dmp) do Sistema e Apps (?)"; EN="System and Application .dmp files (?)";
-                                TipPT="Remove arquivos MEMORY.DMP, Minidump e CrashDumps gerados após telas azuis ou fechamentos inesperados.";
-                                TipEN="Removes MEMORY.DMP, Minidump, and CrashDumps generated after crashes or BSoDs." }
-    "ClnMaJunkFiles"       = @{ PT="Arquivos inúteis de MA (?)"; EN="MA / Upgrade Junk Files (?)";
-                                TipPT="Remove resíduos de atualizações de recursos do Windows (PostRebootEventCache, caches de setup).";
-                                TipEN="Removes Windows feature upgrade leftovers (PostRebootEventCache, setup caches)." }
-    "ClnIdmTempFiles"      = @{ PT="Internet Download Manager temporary files (?)"; EN="Internet Download Manager temporary files (?)";
-                                TipPT="Limpa downloads temporários incompletos do IDM (DwnlData). Desmarcado por padrão para não apagar downloads pausados.";
-                                TipEN="Clears incomplete temporary IDM downloads (DwnlData). Unchecked by default to protect paused downloads." }
+    "CatTemp"              = @{ PT="Arquivos Temporários"; EN="Temporary Files"; TipPT="Temporários do WinSxS, Logs, Temp, Lixeira, Crash Dumps, resíduos de atualização e IDM."; TipEN="WinSxS temp, Logs, Temp folders, Recycle Bin, Crash Dumps, upgrade junk, and IDM temp." }
+    "ClnWinSxSTemp"        = @{ PT="Arquivos Temporários WinSxS (?)"; EN="WinSxS Temporary Files (?)"; TipPT="Remove arquivos temporários pendentes em C:\Windows\WinSxS\Temp."; TipEN="Removes pending temporary files inside C:\Windows\WinSxS\Temp." }
+    "ClnWindowsLogs"       = @{ PT="Log do Windows (?)"; EN="Windows Logs (?)"; TipPT="Limpa arquivos de log antigos (.log) em Windows\Logs e Panther."; TipEN="Clears old .log files in Windows\Logs and Panther." }
+    "ClnTempFiles"         = @{ PT="Arquivos Temporários (?)"; EN="Temporary Files (?)"; TipPT="Limpa arquivos temporários do usuário (%TEMP%) e do sistema (C:\Windows\Temp)."; TipEN="Clears user (%TEMP%) and system (C:\Windows\Temp) temporary files." }
+    "ClnRecycleBin"        = @{ PT="Estação de reciclagem (?)"; EN="Recycle Bin (?)"; TipPT="Esvazia completamente a Lixeira de todas as unidades."; TipEN="Permanently empties the Recycle Bin across all drives." }
+    "ClnCrashDumps"        = @{ PT="Arquivos de despejo (.dmp) do Sistema e Apps (?)"; EN="System and Application .dmp files (?)"; TipPT="Remove arquivos MEMORY.DMP, Minidump e CrashDumps."; TipEN="Removes MEMORY.DMP, Minidump, and CrashDumps." }
+    "ClnMaJunkFiles"       = @{ PT="Arquivos inúteis de MA (?)"; EN="MA / Upgrade Junk Files (?)"; TipPT="Remove resíduos de atualizações de recursos do Windows."; TipEN="Removes Windows feature upgrade leftovers." }
+    "ClnIdmTempFiles"      = @{ PT="Internet Download Manager temporary files (?)"; EN="Internet Download Manager temporary files (?)"; TipPT="Limpa downloads temporários incompletos do IDM (DwnlData)."; TipEN="Clears incomplete temporary IDM downloads (DwnlData)." }
 }
 
 # ==============================================================================
@@ -1394,7 +1476,6 @@ function Set-AppLanguage ([string]$langCode) {
         $BtnUltDisable.Content = "Perfil Desempenho Máximo - Desativar (Equilibrado)"
         $BtnUltEnable.Content = "Perfil Desempenho Máximo - Ativar (Ultimate)"
 
-        # Aba Gaming
         $HdrGameList.Text = "Competitive Games"
         $SubGameList.Text = "Selecione um jogo para gerenciar otimizações automáticas."
         $HdrAddCustomGame.Text = "Adicionar Jogo Personalizado"
@@ -1413,9 +1494,8 @@ function Set-AppLanguage ([string]$langCode) {
         $HdrNvTel.Text = "Desativar Telemetria NVIDIA"
         $DescNvTel.Text = "Pausa automaticamente os serviços de container/telemetria NVIDIA enquanto o jogo está aberto e restaura exatamente o estado original ao fechar."
 
-        # Aba Limpeza Profunda
-        $HdrDeepCleanTitle.Text = "Limpeza Profunda do Sistema (Motor DISM++)"
-        $SubDeepCleanDesc.Text = "Selecione caches do sistema, componentes substituídos do WinSxS, logs e arquivos temporários para limpeza segura."
+        $HdrDeepCleanTitle.Text = "Limpeza Profunda do Sistema (Motor Nativo C# / DISM++)"
+        $SubDeepCleanDesc.Text = "Selecione caches do sistema, componentes substituídos do WinSxS, logs e arquivos temporários. Todos os logs saem no terminal PowerShell."
         $BtnCleanScan.Content = "🔍 Verificar Espaço"
         $BtnCleanDefault.Content = "Padrão"
         $BtnCleanAll.Content = "Marcar Tudo"
@@ -1433,7 +1513,7 @@ function Set-AppLanguage ([string]$langCode) {
         $BtnAdvCleanCache.Content = "Limpar Temp e Prefetch"
         $BtnAdvFlushNet.Content = "Resetar Rede e Limpar DNS"
 
-        $LblFooterNote.Text = "Nota: Passe o mouse sobre qualquer opção (?) para ver detalhes. Desmarcar uma otimização ativa e clicar em Aplicar ou Reverter restaura o padrão."
+        $LblFooterNote.Text = "Nota: Passe o mouse sobre (?) para ver detalhes. Todo o histórico detalhado das operações é exibido diretamente no console do PowerShell."
         $BtnRunTweaks.Content = "Aplicar Otimizações"
         $BtnUndoTweaks.Content = "Reverter Selecionadas"
     } else {
@@ -1459,7 +1539,6 @@ function Set-AppLanguage ([string]$langCode) {
         $BtnUltDisable.Content = "Ultimate Performance Profile - Disable"
         $BtnUltEnable.Content = "Ultimate Performance Profile - Enable"
 
-        # Gaming Tab
         $HdrGameList.Text = "Competitive Games"
         $SubGameList.Text = "Select a game to manage automatic optimizations."
         $HdrAddCustomGame.Text = "Add Custom Game"
@@ -1478,9 +1557,8 @@ function Set-AppLanguage ([string]$langCode) {
         $HdrNvTel.Text = "Disable NVIDIA Telemetry"
         $DescNvTel.Text = "Automatically pauses NVIDIA container/telemetry services while the game runs and restores their exact original state when you exit."
 
-        # Deep Clean Tab
-        $HdrDeepCleanTitle.Text = "Deep System Cleanup (DISM++ Engine)"
-        $SubDeepCleanDesc.Text = "Select system caches, WinSxS superseded components, logs, and temporary files to purge safely."
+        $HdrDeepCleanTitle.Text = "Deep System Cleanup (Native C# / DISM++ Engine)"
+        $SubDeepCleanDesc.Text = "Select system caches, WinSxS superseded components, logs, and temporary files. All verbose logs output directly to the PowerShell terminal."
         $BtnCleanScan.Content = "🔍 Scan Space"
         $BtnCleanDefault.Content = "Default"
         $BtnCleanAll.Content = "Select All"
@@ -1498,7 +1576,7 @@ function Set-AppLanguage ([string]$langCode) {
         $BtnAdvCleanCache.Content = "Purge Temp & Prefetch"
         $BtnAdvFlushNet.Content = "Reset Network & Flush DNS"
 
-        $LblFooterNote.Text = "Note: Hover over any option (?) to view details. Unchecking an active tweak and clicking Apply or Revert restores Windows defaults."
+        $LblFooterNote.Text = "Note: Hover over (?) to view details. Full verbose logs of all actions are printed directly in the PowerShell console."
         $BtnRunTweaks.Content = "Apply Selected Tweaks"
         $BtnUndoTweaks.Content = "Revert Selected Tweaks"
     }
@@ -1586,91 +1664,39 @@ $BtnCreateRestore.Add_Click({
 })
 
 # ==============================================================================
-# MOTOR DA ABA "LIMPEZA PROFUNDA" (DISM++ DEEP CLEAN - 25 ITENS)
+# MOTOR ASSÍNCRONO DA ABA "LIMPEZA PROFUNDA" (ZERO FREEZE + C# FASTCLEANER)
 # ==============================================================================
 $script:CleanScannedBytes = @{}
 $script:CleanItems = @(
-    # Categoria 1: Arquivos Expirados
-    @{ Id="WinSxSSuperseded"; Chk=$ClnWinSxSSuperseded; Sz=$SzWinSxSSuperseded; Cat="Expired"; Default=$true;
-       Paths=@();
-       Scan={ 0 };
-       Clean={ & dism.exe /Online /Cleanup-Image /StartComponentCleanup /Quiet | Out-Null } },
-    @{ Id="DismResidual"; Chk=$ClnDismResidual; Sz=$SzDismResidual; Cat="Expired"; Default=$true;
-       Paths=@("$env:windir\Logs\DISM\*.bak", "$env:windir\Temp\DISM*") },
-    @{ Id="ChromeOldBackup"; Chk=$ClnChromeOldBackup; Sz=$SzChromeOldBackup; Cat="Expired"; Default=$true;
-       Paths=@("$env:LOCALAPPDATA\Google\Chrome\User Data\*\old_*", "$env:LOCALAPPDATA\Google\Chrome\Temp\*", "${env:ProgramFiles}\Google\Chrome\Application\*\Installer\chrome.7z") },
+    @{ Id="WinSxSSuperseded"; Chk=$ClnWinSxSSuperseded; Sz=$SzWinSxSSuperseded; Cat="Expired"; Default=$true; Mode="DISM"; Paths=@() },
+    @{ Id="DismResidual";     Chk=$ClnDismResidual;     Sz=$SzDismResidual;     Cat="Expired"; Default=$true; Mode="PATH"; Paths=@("$env:windir\Logs\DISM\*.bak", "$env:windir\Temp\DISM*") },
+    @{ Id="ChromeOldBackup";  Chk=$ClnChromeOldBackup;  Sz=$SzChromeOldBackup;  Cat="Expired"; Default=$true; Mode="PATH"; Paths=@("$env:LOCALAPPDATA\Google\Chrome\User Data\*\old_*", "$env:LOCALAPPDATA\Google\Chrome\Temp\*", "${env:ProgramFiles}\Google\Chrome\Application\*\Installer\chrome.7z") },
 
-    # Categoria 2: Sistema
-    @{ Id="WerReports"; Chk=$ClnWerReports; Sz=$SzWerReports; Cat="System"; Default=$true;
-       Paths=@("$env:ProgramData\Microsoft\Windows\WER\ReportArchive\*", "$env:ProgramData\Microsoft\Windows\WER\ReportQueue\*", "$env:LOCALAPPDATA\Microsoft\Windows\WER\ReportArchive\*", "$env:LOCALAPPDATA\Microsoft\Windows\WER\ReportQueue\*") },
-    @{ Id="WinEvents"; Chk=$ClnWinEvents; Sz=$SzWinEvents; Cat="System"; Default=$true;
-       Paths=@("$env:windir\System32\winevt\Logs\*.evtx");
-       Clean={ foreach ($log in @("Application","System","Setup","Windows PowerShell")) { & wevtutil.exe cl "$log" 2>$null } } },
-    @{ Id="WinUpdateHistory"; Chk=$ClnWinUpdateHistory; Sz=$SzWinUpdateHistory; Cat="System"; Default=$true;
-       Paths=@("$env:windir\SoftwareDistribution\DataStore\Logs\*", "$env:windir\SoftwareDistribution\ReportingEvents.log") },
-    @{ Id="DamagedAppx"; Chk=$ClnDamagedAppx; Sz=$SzDamagedAppx; Cat="System"; Default=$true;
-       Paths=@("$env:LOCALAPPDATA\Packages\*\TempState\*", "$env:LOCALAPPDATA\Packages\*\AC\Temp\*") },
-    @{ Id="RestorePoints"; Chk=$ClnRestorePoints; Sz=$SzRestorePoints; Cat="System"; Default=$true;
-       Paths=@();
-       Scan={ 0 };
-       Clean={ & vssadmin.exe delete shadows /for=$env:SystemDrive /all /quiet 2>$null | Out-Null } },
+    @{ Id="WerReports";       Chk=$ClnWerReports;       Sz=$SzWerReports;       Cat="System";  Default=$true; Mode="PATH"; Paths=@("$env:ProgramData\Microsoft\Windows\WER\ReportArchive\*", "$env:ProgramData\Microsoft\Windows\WER\ReportQueue\*", "$env:LOCALAPPDATA\Microsoft\Windows\WER\ReportArchive\*", "$env:LOCALAPPDATA\Microsoft\Windows\WER\ReportQueue\*") },
+    @{ Id="WinEvents";        Chk=$ClnWinEvents;        Sz=$SzWinEvents;        Cat="System";  Default=$true; Mode="EVTX"; Paths=@("$env:windir\System32\winevt\Logs\*.evtx") },
+    @{ Id="WinUpdateHistory"; Chk=$ClnWinUpdateHistory; Sz=$SzWinUpdateHistory; Cat="System";  Default=$true; Mode="PATH"; Paths=@("$env:windir\SoftwareDistribution\DataStore\Logs\*", "$env:windir\SoftwareDistribution\ReportingEvents.log") },
+    @{ Id="DamagedAppx";      Chk=$ClnDamagedAppx;      Sz=$SzDamagedAppx;      Cat="System";  Default=$true; Mode="PATH"; Paths=@("$env:LOCALAPPDATA\Packages\*\TempState\*", "$env:LOCALAPPDATA\Packages\*\AC\Temp\*") },
+    @{ Id="RestorePoints";    Chk=$ClnRestorePoints;    Sz=$SzRestorePoints;    Cat="System";  Default=$true; Mode="VSS";  Paths=@() },
 
-    # Categoria 3: Arquivos de Cache
-    @{ Id="WinDownloadCache"; Chk=$ClnWinDownloadCache; Sz=$SzWinDownloadCache; Cat="Cache"; Default=$true;
-       Paths=@("$env:windir\SoftwareDistribution\Download\*");
-       Clean={
-           $wuWasRunning = ((Get-Service "wuauserv" -ErrorAction SilentlyContinue).Status -eq 'Running')
-           Stop-Service -Name "wuauserv", "bits" -Force -ErrorAction SilentlyContinue
-           Remove-Item "$env:windir\SoftwareDistribution\Download\*" -Recurse -Force -ErrorAction SilentlyContinue
-           if ($wuWasRunning) { Start-Service -Name "wuauserv" -ErrorAction SilentlyContinue }
-       } },
-    @{ Id="DeliveryOptCache"; Chk=$ClnDeliveryOptCache; Sz=$SzDeliveryOptCache; Cat="Cache"; Default=$true;
-       Paths=@("$env:windir\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache\*");
-       Clean={
-           if (Get-Command Delete-DeliveryOptimizationCache -ErrorAction SilentlyContinue) { Delete-DeliveryOptimizationCache -Force -ErrorAction SilentlyContinue }
-           Remove-Item "$env:windir\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache\*" -Recurse -Force -ErrorAction SilentlyContinue
-       } },
-    @{ Id="RdpClientCache"; Chk=$ClnRdpClientCache; Sz=$SzRdpClientCache; Cat="Cache"; Default=$true;
-       Paths=@("$env:LOCALAPPDATA\Microsoft\Terminal Server Client\Cache\*") },
-    @{ Id="NetAssemblyCache"; Chk=$ClnNetAssemblyCache; Sz=$SzNetAssemblyCache; Cat="Cache"; Default=$true;
-       Paths=@("$env:windir\Microsoft.NET\Framework\*\Temporary ASP.NET Files\*", "$env:windir\Microsoft.NET\Framework64\*\Temporary ASP.NET Files\*", "$env:LOCALAPPDATA\Microsoft\CLR_v*\UsageLogs\*") },
-    @{ Id="PrefetchFiles"; Chk=$ClnPrefetchFiles; Sz=$SzPrefetchFiles; Cat="Cache"; Default=$true;
-       Paths=@("$env:windir\Prefetch\*.pf", "$env:windir\Prefetch\*.db") },
-    @{ Id="ThumbnailCache"; Chk=$ClnThumbnailCache; Sz=$SzThumbnailCache; Cat="Cache"; Default=$true;
-       Paths=@("$env:LOCALAPPDATA\Microsoft\Windows\Explorer\thumbcache_*.db", "$env:LOCALAPPDATA\Microsoft\Windows\Explorer\iconcache_*.db");
-       Clean={
-           Stop-Process -Name "explorer" -Force -ErrorAction SilentlyContinue
-           Start-Sleep -Milliseconds 600
-           Remove-Item "$env:LOCALAPPDATA\Microsoft\Windows\Explorer\thumbcache_*.db", "$env:LOCALAPPDATA\Microsoft\Windows\Explorer\iconcache_*.db" -Force -ErrorAction SilentlyContinue
-           Start-Process "explorer.exe"
-       } },
-    @{ Id="WinInetWebCache"; Chk=$ClnWinInetWebCache; Sz=$SzWinInetWebCache; Cat="Cache"; Default=$true;
-       Paths=@("$env:LOCALAPPDATA\Microsoft\Windows\INetCache\*") },
-    @{ Id="WinInetCookies"; Chk=$ClnWinInetCookies; Sz=$SzWinInetCookies; Cat="Cache"; Default=$true;
-       Paths=@("$env:LOCALAPPDATA\Microsoft\Windows\INetCookies\*") },
+    @{ Id="WinDownloadCache"; Chk=$ClnWinDownloadCache; Sz=$SzWinDownloadCache; Cat="Cache";   Default=$true; Mode="WUDL"; Paths=@("$env:windir\SoftwareDistribution\Download\*") },
+    @{ Id="DeliveryOptCache"; Chk=$ClnDeliveryOptCache; Sz=$SzDeliveryOptCache; Cat="Cache";   Default=$true; Mode="DO";   Paths=@("$env:windir\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache\*") },
+    @{ Id="RdpClientCache";   Chk=$ClnRdpClientCache;   Sz=$SzRdpClientCache;   Cat="Cache";   Default=$true; Mode="PATH"; Paths=@("$env:LOCALAPPDATA\Microsoft\Terminal Server Client\Cache\*") },
+    @{ Id="NetAssemblyCache"; Chk=$ClnNetAssemblyCache; Sz=$SzNetAssemblyCache; Cat="Cache";   Default=$true; Mode="PATH"; Paths=@("$env:windir\Microsoft.NET\Framework\*\Temporary ASP.NET Files\*", "$env:windir\Microsoft.NET\Framework64\*\Temporary ASP.NET Files\*", "$env:LOCALAPPDATA\Microsoft\CLR_v*\UsageLogs\*") },
+    @{ Id="PrefetchFiles";    Chk=$ClnPrefetchFiles;    Sz=$SzPrefetchFiles;    Cat="Cache";   Default=$true; Mode="PATH"; Paths=@("$env:windir\Prefetch\*.pf", "$env:windir\Prefetch\*.db") },
+    @{ Id="ThumbnailCache";   Chk=$ClnThumbnailCache;   Sz=$SzThumbnailCache;   Cat="Cache";   Default=$true; Mode="THUMB";Paths=@("$env:LOCALAPPDATA\Microsoft\Windows\Explorer\thumbcache_*.db", "$env:LOCALAPPDATA\Microsoft\Windows\Explorer\iconcache_*.db") },
+    @{ Id="WinInetWebCache";  Chk=$ClnWinInetWebCache;  Sz=$SzWinInetWebCache;  Cat="Cache";   Default=$true; Mode="PATH"; Paths=@("$env:LOCALAPPDATA\Microsoft\Windows\INetCache\*") },
+    @{ Id="WinInetCookies";   Chk=$ClnWinInetCookies;   Sz=$SzWinInetCookies;   Cat="Cache";   Default=$true; Mode="PATH"; Paths=@("$env:LOCALAPPDATA\Microsoft\Windows\INetCookies\*") },
 
-    # Categoria 4: Aplicações
-    @{ Id="PackageCache"; Chk=$ClnPackageCache; Sz=$SzPackageCache; Cat="Apps"; Default=$true;
-       Paths=@("$env:LOCALAPPDATA\Packages\*\LocalCache\*") },
-    @{ Id="DefenderHistory"; Chk=$ClnDefenderHistory; Sz=$SzDefenderHistory; Cat="Apps"; Default=$true;
-       Paths=@("$env:ProgramData\Microsoft\Windows Defender\Scans\History\Service\*", "$env:ProgramData\Microsoft\Windows Defender\Scans\History\Results\*") },
+    @{ Id="PackageCache";     Chk=$ClnPackageCache;     Sz=$SzPackageCache;     Cat="Apps";    Default=$true; Mode="PATH"; Paths=@("$env:LOCALAPPDATA\Packages\*\LocalCache\*") },
+    @{ Id="DefenderHistory";  Chk=$ClnDefenderHistory;  Sz=$SzDefenderHistory;  Cat="Apps";    Default=$true; Mode="PATH"; Paths=@("$env:ProgramData\Microsoft\Windows Defender\Scans\History\Service\*", "$env:ProgramData\Microsoft\Windows Defender\Scans\History\Results\*") },
 
-    # Categoria 5: Arquivos Temporários
-    @{ Id="WinSxSTemp"; Chk=$ClnWinSxSTemp; Sz=$SzWinSxSTemp; Cat="Temp"; Default=$true;
-       Paths=@("$env:windir\WinSxS\Temp\*") },
-    @{ Id="WindowsLogs"; Chk=$ClnWindowsLogs; Sz=$SzWindowsLogs; Cat="Temp"; Default=$true;
-       Paths=@("$env:windir\Logs\CBS\*.log", "$env:windir\Logs\DISM\*.log", "$env:windir\Panther\*.log", "$env:windir\*.log") },
-    @{ Id="TempFiles"; Chk=$ClnTempFiles; Sz=$SzTempFiles; Cat="Temp"; Default=$true;
-       Paths=@("$env:TEMP\*", "$env:windir\Temp\*") },
-    @{ Id="RecycleBin"; Chk=$ClnRecycleBin; Sz=$SzRecycleBin; Cat="Temp"; Default=$true;
-       Paths=@("$env:SystemDrive\`$Recycle.Bin\*");
-       Clean={ Clear-RecycleBin -Force -ErrorAction SilentlyContinue } },
-    @{ Id="CrashDumps"; Chk=$ClnCrashDumps; Sz=$SzCrashDumps; Cat="Temp"; Default=$true;
-       Paths=@("$env:windir\Minidump\*", "$env:windir\MEMORY.DMP", "$env:LOCALAPPDATA\CrashDumps\*") },
-    @{ Id="MaJunkFiles"; Chk=$ClnMaJunkFiles; Sz=$SzMaJunkFiles; Cat="Temp"; Default=$true;
-       Paths=@("$env:windir\SoftwareDistribution\PostRebootEventCache.V2\*", "$env:SystemDrive\`$Windows.~BT\*", "$env:SystemDrive\`$Windows.~WS\*") },
-    @{ Id="IdmTempFiles"; Chk=$ClnIdmTempFiles; Sz=$SzIdmTempFiles; Cat="Temp"; Default=$false;
-       Paths=@("$env:APPDATA\IDM\DwnlData\*") }
+    @{ Id="WinSxSTemp";       Chk=$ClnWinSxSTemp;       Sz=$SzWinSxSTemp;       Cat="Temp";    Default=$true; Mode="PATH"; Paths=@("$env:windir\WinSxS\Temp\*") },
+    @{ Id="WindowsLogs";      Chk=$ClnWindowsLogs;      Sz=$SzWindowsLogs;      Cat="Temp";    Default=$true; Mode="PATH"; Paths=@("$env:windir\Logs\CBS\*.log", "$env:windir\Logs\DISM\*.log", "$env:windir\Panther\*.log", "$env:windir\*.log") },
+    @{ Id="TempFiles";        Chk=$ClnTempFiles;        Sz=$SzTempFiles;        Cat="Temp";    Default=$true; Mode="PATH"; Paths=@("$env:TEMP\*", "$env:windir\Temp\*") },
+    @{ Id="RecycleBin";       Chk=$ClnRecycleBin;       Sz=$SzRecycleBin;       Cat="Temp";    Default=$true; Mode="BIN";  Paths=@("$env:SystemDrive\`$Recycle.Bin\*") },
+    @{ Id="CrashDumps";       Chk=$ClnCrashDumps;       Sz=$SzCrashDumps;       Cat="Temp";    Default=$true; Mode="PATH"; Paths=@("$env:windir\Minidump\*", "$env:windir\MEMORY.DMP", "$env:LOCALAPPDATA\CrashDumps\*") },
+    @{ Id="MaJunkFiles";      Chk=$ClnMaJunkFiles;      Sz=$SzMaJunkFiles;      Cat="Temp";    Default=$true; Mode="PATH"; Paths=@("$env:windir\SoftwareDistribution\PostRebootEventCache.V2\*", "$env:SystemDrive\`$Windows.~BT\*", "$env:SystemDrive\`$Windows.~WS\*") },
+    @{ Id="IdmTempFiles";     Chk=$ClnIdmTempFiles;     Sz=$SzIdmTempFiles;     Cat="Temp";    Default=$false;Mode="PATH"; Paths=@("$env:APPDATA\IDM\DwnlData\*") }
 )
 
 function Format-ByteSize ([int64]$bytes) {
@@ -1680,20 +1706,6 @@ function Format-ByteSize ([int64]$bytes) {
     return "0.0 MB"
 }
 
-function Get-PathsSizeBytes ([string[]]$pathPatterns) {
-    [int64]$total = 0
-    foreach ($pattern in $pathPatterns) {
-        try {
-            $items = Get-ChildItem -Path $pattern -File -Recurse -Force -ErrorAction SilentlyContinue
-            if ($items) {
-                $sum = ($items | Measure-Object -Property Length -Sum).Sum
-                if ($sum) { $total += [int64]$sum }
-            }
-        } catch {}
-    }
-    return $total
-}
-
 function Update-CleanSizeLabels {
     $reqText = if ($script:Lang -eq "PT") { "Requer verificar" } else { "Requires scan" }
     [int64]$selectedTotal = 0
@@ -1701,24 +1713,33 @@ function Update-CleanSizeLabels {
 
     foreach ($item in $script:CleanItems) {
         if ($script:CleanScannedBytes.ContainsKey($item.Id)) {
-            $b = $script:CleanScannedBytes[$item.Id]
-            $item.Sz.Text = Format-ByteSize $b
-            $item.Sz.Foreground = if ($b -gt 0) { "#4ADE80" } else { "#9CA3AF" }
-            if ($item.Chk.IsChecked) { $selectedTotal += $b }
+            $val = $script:CleanScannedBytes[$item.Id]
+            if ($val -eq -2) {
+                $item.Sz.Text = if ($script:Lang -eq "PT") { "DISM / WinSxS" } else { "DISM / WinSxS" }
+                $item.Sz.Foreground = "#A78BFA"
+            } elseif ($val -eq -3) {
+                $item.Sz.Text = if ($script:Lang -eq "PT") { "Cópias VSS" } else { "VSS Shadows" }
+                $item.Sz.Foreground = "#F59E0B"
+            } else {
+                $item.Sz.Text = Format-ByteSize $val
+                $item.Sz.Foreground = if ($val -gt 0) { "#4ADE80" } else { "#9CA3AF" }
+                if ($item.Chk.IsChecked) { $selectedTotal += $val }
+            }
         } else {
             $item.Sz.Text = $reqText
             $item.Sz.Foreground = "#9CA3AF"
         }
     }
 
-    if ($script:Lang -eq "PT") {
-        $LblCleanTotalSize.Text = if ($hasAnyScan) { "Selecionado: $(Format-ByteSize $selectedTotal)" } else { "Estimado: Requer verificar" }
-    } else {
-        $LblCleanTotalSize.Text = if ($hasAnyScan) { "Selected: $(Format-ByteSize $selectedTotal)" } else { "Estimated: Requires scan" }
+    if (-not $script:CleanJobRunning) {
+        if ($script:Lang -eq "PT") {
+            $LblCleanTotalSize.Text = if ($hasAnyScan) { "Selecionado: $(Format-ByteSize $selectedTotal)" } else { "Estimado: Requer verificar" }
+        } else {
+            $LblCleanTotalSize.Text = if ($hasAnyScan) { "Selected: $(Format-ByteSize $selectedTotal)" } else { "Estimated: Requires scan" }
+        }
     }
 }
 
-# Sincronização dos Checkboxes de Categoria
 $script:syncingCleanCat = $false
 function Bind-CategoryCheckbox ($catChk, [string]$catKey) {
     $catChk.Add_Checked({
@@ -1772,19 +1793,159 @@ $BtnCleanNone.Add_Click({
     Update-CleanSizeLabels
 })
 
+# Executor Assíncrono (Runspace + DispatcherTimer) para Scan & Clean sem travar a UI
+$script:CleanJobRunning = $false
+function Start-AsyncDeepCleanJob ([string]$JobType, [array]$WorkList) {
+    if ($script:CleanJobRunning) { return }
+    $script:CleanJobRunning = $true
+    $BtnCleanScan.IsEnabled = $false
+    $BtnCleanExecute.IsEnabled = $false
+
+    $sync = [hashtable]::Synchronized(@{
+        Done       = $false
+        CurrentIdx = 0
+        TotalCount = $WorkList.Count
+        Results    = [System.Collections.Concurrent.ConcurrentDictionary[string, int64]]::new()
+        Logs       = [System.Collections.Concurrent.ConcurrentQueue[hashtable]]::new()
+        FreedBytes = [int64]0
+        ScanBytes  = [int64]0
+    })
+
+    $ps = [PowerShell]::Create()
+    [void]$ps.AddScript({
+        param($JobType, $WorkList, $Sync)
+        function Enqueue-Log ([string]$m, [string]$l = "INFO") {
+            $Sync.Logs.Enqueue(@{ Msg = $m; Lvl = $l })
+        }
+        function Fmt-Size ([int64]$b) {
+            if ($b -ge 1GB) { return ("{0:N2} GB" -f ($b / 1GB)) }
+            if ($b -ge 1MB) { return ("{0:N2} MB" -f ($b / 1MB)) }
+            if ($b -ge 1KB) { return ("{0:N1} KB" -f ($b / 1KB)) }
+            return "0.0 MB"
+        }
+
+        $idx = 0
+        foreach ($item in $WorkList) {
+            $idx++
+            $Sync.CurrentIdx = $idx
+            if ($JobType -eq "SCAN") {
+                if ($item.Mode -eq "DISM") {
+                    $Sync.Results[$item.Id] = -2
+                } elseif ($item.Mode -eq "VSS") {
+                    $Sync.Results[$item.Id] = -3
+                } else {
+                    [int64]$sz = [BetterTitus.FastCleaner]::GetPatternSize($item.Paths)
+                    $Sync.Results[$item.Id] = $sz
+                    $Sync.ScanBytes += $sz
+                    if ($sz -gt 0) {
+                        Enqueue-Log "$($item.Label) -> $(Fmt-Size $sz)" "INFO"
+                    }
+                }
+            } elseif ($JobType -eq "CLEAN") {
+                try {
+                    [int64]$before = if ($item.Paths.Count -gt 0) { [BetterTitus.FastCleaner]::GetPatternSize($item.Paths) } else { 0 }
+                    switch ($item.Mode) {
+                        "DISM" {
+                            Enqueue-Log "Executando DISM /StartComponentCleanup (aguarde)..." "INFO"
+                            & dism.exe /Online /Cleanup-Image /StartComponentCleanup /Quiet | Out-Null
+                        }
+                        "EVTX" {
+                            foreach ($log in @("Application", "System", "Setup", "Windows PowerShell")) {
+                                & wevtutil.exe cl "$log" 2>$null
+                            }
+                        }
+                        "VSS" {
+                            & vssadmin.exe delete shadows /for=$env:SystemDrive /all /quiet 2>$null | Out-Null
+                        }
+                        "WUDL" {
+                            $wuRun = ((Get-Service "wuauserv" -ErrorAction SilentlyContinue).Status -eq 'Running')
+                            Stop-Service -Name "wuauserv", "bits" -Force -ErrorAction SilentlyContinue
+                            [BetterTitus.FastCleaner]::CleanPattern($item.Paths)
+                            if ($wuRun) { Start-Service -Name "wuauserv" -ErrorAction SilentlyContinue }
+                        }
+                        "DO" {
+                            if (Get-Command Delete-DeliveryOptimizationCache -ErrorAction SilentlyContinue) {
+                                Delete-DeliveryOptimizationCache -Force -ErrorAction SilentlyContinue
+                            }
+                            [BetterTitus.FastCleaner]::CleanPattern($item.Paths)
+                        }
+                        "THUMB" {
+                            Stop-Process -Name "explorer" -Force -ErrorAction SilentlyContinue
+                            Start-Sleep -Milliseconds 500
+                            [BetterTitus.FastCleaner]::CleanPattern($item.Paths)
+                            Start-Process "explorer.exe"
+                        }
+                        "BIN" {
+                            Clear-RecycleBin -Force -ErrorAction SilentlyContinue
+                        }
+                        default {
+                            [BetterTitus.FastCleaner]::CleanPattern($item.Paths)
+                        }
+                    }
+                    [int64]$after = if ($item.Paths.Count -gt 0) { [BetterTitus.FastCleaner]::GetPatternSize($item.Paths) } else { 0 }
+                    [int64]$freed = [math]::Max(0, ($before - $after))
+                    $Sync.FreedBytes += $freed
+                    $Sync.Results[$item.Id] = if ($item.Mode -eq "DISM") { -2 } elseif ($item.Mode -eq "VSS") { -3 } else { $after }
+                    Enqueue-Log "$($item.Label) -> Limpo ($(Fmt-Size $freed))" "OK"
+                } catch {
+                    Enqueue-Log "$($item.Label) -> Erro: $($_.Exception.Message)" "ERROR"
+                }
+            }
+        }
+        $Sync.Done = $true
+    }).AddArgument($JobType).AddArgument($WorkList).AddArgument($sync)
+
+    $asyncHandle = $ps.BeginInvoke()
+
+    $timer = New-Object System.Windows.Threading.DispatcherTimer
+    $timer.Interval = [TimeSpan]::FromMilliseconds(80)
+    $timer.Add_Tick({
+        $entry = $null
+        while ($sync.Logs.TryDequeue([ref]$entry)) {
+            Write-BTLog $entry.Msg $entry.Lvl
+        }
+        foreach ($kv in $sync.Results.GetEnumerator()) {
+            $script:CleanScannedBytes[$kv.Key] = $kv.Value
+        }
+        Update-CleanSizeLabels
+
+        if ($script:Lang -eq "PT") {
+            $LblCleanTotalSize.Text = if ($JobType -eq "SCAN") { "Verificando... ($($sync.CurrentIdx)/$($sync.TotalCount))" } else { "Limpando... ($($sync.CurrentIdx)/$($sync.TotalCount))" }
+        } else {
+            $LblCleanTotalSize.Text = if ($JobType -eq "SCAN") { "Scanning... ($($sync.CurrentIdx)/$($sync.TotalCount))" } else { "Cleaning... ($($sync.CurrentIdx)/$($sync.TotalCount))" }
+        }
+
+        if ($sync.Done) {
+            $timer.Stop()
+            try { $ps.EndInvoke($asyncHandle) } catch {}
+            $ps.Dispose()
+            $script:CleanJobRunning = $false
+            $BtnCleanScan.IsEnabled = $true
+            $BtnCleanExecute.IsEnabled = $true
+            Update-CleanSizeLabels
+
+            if ($JobType -eq "SCAN") {
+                Write-BTLog "=== VERIFICAÇÃO CONCLUÍDA: $(Format-ByteSize $sync.ScanBytes) DETECTADOS ===" "OK"
+            } else {
+                Write-BTLog "=== LIMPEZA PROFUNDA CONCLUÍDA | ESPAÇO LIBERADO: $(Format-ByteSize $sync.FreedBytes) ===" "OK"
+            }
+        }
+    }.GetNewClosure())
+    $timer.Start()
+}
+
 $BtnCleanScan.Add_Click({
-    Write-BTLog "Analisando arquivos residuais e caches do sistema..." "INFO"
-    [System.Windows.Forms.Application]::DoEvents()
-    [int64]$grandTotal = 0
+    Write-BTLog "=== INICIANDO VERIFICAÇÃO DE ESPAÇO (LIMPEZA PROFUNDA) ===" "HEADER"
+    $payload = @()
     foreach ($it in $script:CleanItems) {
-        [int64]$bytes = 0
-        if ($it.ContainsKey("Scan")) { $bytes = [int64](& $it.Scan) }
-        elseif ($it.Paths.Count -gt 0) { $bytes = Get-PathsSizeBytes $it.Paths }
-        $script:CleanScannedBytes[$it.Id] = $bytes
-        $grandTotal += $bytes
+        $payload += [PSCustomObject]@{
+            Id    = $it.Id
+            Mode  = $it.Mode
+            Paths = $it.Paths
+            Label = ($it.Chk.Content.ToString() -replace '\s*\(\?\)$', '')
+        }
     }
-    Update-CleanSizeLabels
-    Write-BTLog "Verificação concluída: $(Format-ByteSize $grandTotal) detectados." "OK"
+    Start-AsyncDeepCleanJob "SCAN" $payload
 })
 
 $BtnCleanExecute.Add_Click({
@@ -1805,33 +1966,17 @@ $BtnCleanExecute.Add_Click({
         }
     }
 
-    Write-BTLog "=== INICIANDO LIMPEZA PROFUNDA ($($selected.Count) ITENS) ===" "INFO"
-    [int64]$freedTotal = 0
-
+    Write-BTLog "=== INICIANDO LIMPEZA PROFUNDA ($($selected.Count) ITENS) ===" "HEADER"
+    $payload = @()
     foreach ($it in $selected) {
-        $labelClean = ($it.Chk.Content.ToString() -replace '\s*\(\?\)$', '')
-        try {
-            [int64]$before = if ($it.Paths.Count -gt 0) { Get-PathsSizeBytes $it.Paths } else { 0 }
-            if ($it.ContainsKey("Clean")) {
-                & $it.Clean
-            } else {
-                foreach ($p in $it.Paths) {
-                    Remove-Item -Path $p -Recurse -Force -ErrorAction SilentlyContinue
-                }
-            }
-            [int64]$after = if ($it.Paths.Count -gt 0) { Get-PathsSizeBytes $it.Paths } else { 0 }
-            [int64]$freed = [math]::Max(0, ($before - $after))
-            $freedTotal += $freed
-            $script:CleanScannedBytes[$it.Id] = $after
-            Write-BTLog "$labelClean -> Limpo ($(Format-ByteSize $freed))" "OK"
-        } catch {
-            Write-BTLog "$labelClean -> Erro: $($_.Exception.Message)" "ERROR"
+        $payload += [PSCustomObject]@{
+            Id    = $it.Id
+            Mode  = $it.Mode
+            Paths = $it.Paths
+            Label = ($it.Chk.Content.ToString() -replace '\s*\(\?\)$', '')
         }
-        [System.Windows.Forms.Application]::DoEvents()
     }
-
-    Update-CleanSizeLabels
-    Write-BTLog "=== LIMPEZA CONCLUÍDA | ESPAÇO LIBERADO: $(Format-ByteSize $freedTotal) ===" "OK"
+    Start-AsyncDeepCleanJob "CLEAN" $payload
 })
 
 # ==============================================================================
@@ -1965,19 +2110,16 @@ function Update-SelectedGameUI {
     $LblSelectedGameTitle.Text = $game.Name
     $LblSelectedGameExe.Text   = $exe
 
-    # 1. DSCP 46
     $isDscpActive = ((Get-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\QoS\BetterTitus_$id" "DSCP Value" "") -eq "46")
     $script:GameStateCache.Dscp = $isDscpActive
     $TglGameDscp.IsChecked = $isDscpActive
     $StatusDscp.Foreground = if ($isDscpActive) { "#4ADE80" } else { "#9CA3AF" }
 
-    # 2. Afinidade + Prioridade
     $isAffActive = (Test-ScheduledTaskFast "BetterTitus_Affinity_$id")
     $script:GameStateCache.Affinity = $isAffActive
     $TglGameAffinity.IsChecked = $isAffActive
     $StatusAffinity.Foreground = if ($isAffActive) { "#4ADE80" } else { "#9CA3AF" }
 
-    # 3. DX11 Flags 211
     $gcsChildren = "HKCU:\System\GameConfigStore\Children"
     $dxFlagsVal = $null
     if (Test-Path $gcsChildren) {
@@ -1998,7 +2140,6 @@ function Update-SelectedGameUI {
         $script:GameStateCache.Dx11State = "NONE"; $TglGameDx11.IsChecked = $false; $StatusDx11.Foreground = "#9CA3AF"
     }
 
-    # 4. Telemetria NVIDIA
     $TglGameNvTel.IsEnabled = $script:HwInfo.HasNvidia
     $isNvActive = $script:HwInfo.HasNvidia -and (Test-ScheduledTaskFast "BetterTitus_NvTel_$id")
     $script:GameStateCache.NvTel = $isNvActive
@@ -2387,7 +2528,6 @@ function Sync-SystemState {
     $ChkCpuMitigations.IsChecked = $mitOff
     $script:AppliedSecurityCache.Mitigations = $mitOff
 
-    # Salva snapshot real de todos os checkboxes para detectar quando o usuário desmarcar algum
     $script:InitialTweakState = @{}
     foreach ($chk in $AllLeftChecks) {
         $script:InitialTweakState[$chk.Name] = [bool]$chk.IsChecked
@@ -2504,7 +2644,7 @@ $BtnRestoreWinUpdate.Add_Click({
     Refresh-CachedStatusLabels
 })
 $BtnAdvFlushNet.Add_Click({ Invoke-SafeTweak "Reset de Rede e Flush DNS" { ipconfig /flushdns | Out-Null; netsh winsock reset | Out-Null; netsh int ip reset | Out-Null } })
-$BtnAdvCleanCache.Add_Click({ Invoke-SafeTweak "Limpeza de Pastas Temp e Prefetch" { @("$env:TEMP\*", "$env:windir\Temp\*", "$env:windir\Prefetch\*") | ForEach-Object { Remove-Item -Path $_ -Recurse -Force -ErrorAction SilentlyContinue } } })
+$BtnAdvCleanCache.Add_Click({ Invoke-SafeTweak "Limpeza de Pastas Temp e Prefetch" { [BetterTitus.FastCleaner]::CleanPattern(@("$env:TEMP\*", "$env:windir\Temp\*", "$env:windir\Prefetch\*")) } })
 
 # Presets Seguros
 $BtnPresetClr.Add_Click({ $AllLeftChecks | ForEach-Object { $_.IsChecked = $false }; Write-BTLog "Seleção limpa." "INFO" })
@@ -2615,9 +2755,8 @@ $BtnRunTweaks.Add_Click({
         }
     }
 
-    Write-BTLog "=== INICIANDO APLICAÇÃO / SINCRONIZAÇÃO DE OTIMIZAÇÕES ===" "INFO"
+    Write-BTLog "=== INICIANDO APLICAÇÃO / SINCRONIZAÇÃO DE OTIMIZAÇÕES ===" "HEADER"
 
-    # 1. Reverte automaticamente qualquer tweak que ESTAVA ativo no sistema e o usuário DESMARCOU
     foreach ($chk in $AllLeftChecks) {
         $wasActive = ($script:InitialTweakState.ContainsKey($chk.Name) -and $script:InitialTweakState[$chk.Name] -eq $true)
         if ($wasActive -and -not $chk.IsChecked) {
@@ -2625,7 +2764,6 @@ $BtnRunTweaks.Add_Click({
         }
     }
 
-    # 2. Aplica os tweaks marcados
     if ($ChkActivity.IsChecked)        { Invoke-SafeTweak "Histórico de Atividades" { Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" "EnableActivityFeed" 0; Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" "PublishUserActivities" 0; Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" "UploadUserActivities" 0 } }
     if ($ChkConsumer.IsChecked)        { Invoke-SafeTweak "ConsumerFeatures" { Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent" "DisableWindowsConsumerFeatures" 1; Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" "SilentInstalledAppsEnabled" 0 } }
     if ($ChkDelivery.IsChecked)        { Invoke-SafeTweak "Delivery Optimization" { Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimization\Config" "DODownloadMode" 0; Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization" "DODownloadMode" 0 } }
@@ -2671,7 +2809,6 @@ $BtnRunTweaks.Add_Click({
     if ($ChkBestPerf.IsChecked)        { Invoke-SafeTweak "Visual Effects" { Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" "VisualFXSetting" 2 } }
     if ($ChkWinAI.IsChecked)           { Invoke-SafeTweak "Windows AI (Copilot & Recall)" { Set-Reg "HKCU:\Software\Policies\Microsoft\Windows\WindowsCopilot" "TurnOffWindowsCopilot" 1; Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot" "TurnOffWindowsCopilot" 1; Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsAI" "DisableAIDataAnalysis" 1; Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsAI" "TurnOffSavingSnapshots" 1; Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" "ShowCopilotButton" 0 } }
 
-    # Aplicação Condicional das Opções de Segurança
     if ($applySecurity) {
         if ($ChkBitLocker.IsChecked -and -not $script:AppliedSecurityCache.BitLocker) {
             Invoke-SafeTweak "Desativar BitLocker ($env:SystemDrive)" {
@@ -2707,15 +2844,14 @@ $BtnRunTweaks.Add_Click({
 })
 
 # ==============================================================================
-# REVERTER OTIMIZAÇÕES (REVERTE MARCADAS E/OU DESMARCADAS PELO USUÁRIO)
+# REVERTER OTIMIZAÇÕES
 # ==============================================================================
 $BtnUndoTweaks.Add_Click({
-    Write-BTLog "=== REVERTENDO OTIMIZAÇÕES ===" "INFO"
+    Write-BTLog "=== REVERTENDO OTIMIZAÇÕES ===" "HEADER"
     $revertedAny = $false
 
     foreach ($chk in $AllLeftChecks) {
         $wasActive = ($script:InitialTweakState.ContainsKey($chk.Name) -and $script:InitialTweakState[$chk.Name] -eq $true)
-        # Reverte se o usuário marcou explicitamente para reverter OU se desmarcou uma opção que estava ativa
         if ($chk.IsChecked -or $wasActive) {
             Invoke-RevertSingleTweak $chk.Name
             $revertedAny = $true
@@ -2727,11 +2863,12 @@ $BtnUndoTweaks.Add_Click({
     }
 
     Sync-SystemState
-    Write-BTLog "Otimizações revertidas e estado do sistema sincronizado!" "OK"
+    Write-BTLog "=== REVERSÃO CONCLUÍDA E ESTADO SINCRONIZADO ===" "OK"
 })
 
 # Inicializar BetterTitus
 Sync-SystemState
 Update-SelectedGameUI
 Set-AppLanguage $script:Lang
+Write-BTLog "Interface gráfica pronta." "OK"
 $window.ShowDialog() | Out-Null
