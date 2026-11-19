@@ -1,9 +1,8 @@
 # ==============================================================================
-# BetterTitus - by fugaztweaks (Version 0.8 Beta)
+# BetterTitus - by fugaztweaks (Version 0.8 Beta - Revised)
 # Windows Optimization, Fast Deep Cleanup & Competitive Gaming Utility
 # ==============================================================================
 
-# Auto-elevação compatível tanto com execução local (.ps1) quanto remota (irm | iex)
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     if (-not [string]::IsNullOrWhiteSpace($PSCommandPath) -and (Test-Path $PSCommandPath)) {
         Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
@@ -15,24 +14,59 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
     return
 }
 
-Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Windows.Forms, System.Drawing
+Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Windows.Forms
+$script:HasDrawing = $false
+try {
+    Add-Type -AssemblyName System.Drawing -ErrorAction Stop
+    $script:HasDrawing = $true
+} catch {
+    Write-Warning "[BetterTitus] System.Drawing indisponível; usando fallback vetorial para ícone."
+}
 
 # ==============================================================================
-# DIRETÓRIO SEGURO COM ACL RESTRITA
+# DIRETÓRIO SEGURO E ARQUIVOS DE BACKUP / CONFIGURAÇÃO
 # ==============================================================================
-$script:ConfigDir     = "$env:ProgramData\BetterTitus"
-$script:GamesJson     = "$script:ConfigDir\games.json"
-$script:IconPath      = "$script:ConfigDir\BetterTitus.ico"
-$script:CleanerDll    = "$script:ConfigDir\FastCleaner.dll"
-$script:NvBackup      = "$script:ConfigDir\nv_backup.json"
-$script:SvcBackup     = "$script:ConfigDir\services_backup.json"
-$script:Ipv6Backup    = "$script:ConfigDir\ipv6_backup.json"
-$script:PowerBackup   = "$script:ConfigDir\power_backup.json"
+$script:ConfigDir       = "$env:ProgramData\BetterTitus"
+$script:SettingsJson    = "$script:ConfigDir\settings.json"
+$script:GamesJson       = "$script:ConfigDir\games.json"
+$script:IconPath        = "$script:ConfigDir\BetterTitus.ico"
+$script:CleanerDll      = "$script:ConfigDir\FastCleaner.dll"
+$script:SvcBackup       = "$script:ConfigDir\services_backup.json"
+$script:CoreSvcBackup   = "$script:ConfigDir\core_services_backup.json"
+$script:TasksBackup     = "$script:ConfigDir\tasks_backup.json"
+$script:MmBackup        = "$script:ConfigDir\mmprofile_backup.json"
+$script:CrashBackup     = "$script:ConfigDir\crashcontrol_backup.json"
+$script:Ipv6Backup      = "$script:ConfigDir\ipv6_backup.json"
+$script:PowerBackup     = "$script:ConfigDir\power_backup.json"
 
 if (-not (Test-Path $script:ConfigDir)) {
     New-Item -Path $script:ConfigDir -ItemType Directory -Force | Out-Null
 }
 & icacls.exe $script:ConfigDir /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-32-545:(OI)(CI)RX" | Out-Null
+
+# ==============================================================================
+# LOG NO CONSOLE POWERSHELL
+# ==============================================================================
+function Write-BTLog ([string]$Message, [string]$Level = "INFO") {
+    $time = Get-Date -Format "HH:mm:ss"
+    $color = switch ($Level) {
+        "OK"      { "Green" }
+        "WARN"    { "Yellow" }
+        "ERROR"   { "Red" }
+        "PARTIAL" { "DarkYellow" }
+        "HEADER"  { "Magenta" }
+        default   { "Cyan" }
+    }
+    Write-Host "[$time] " -NoNewline -ForegroundColor DarkGray
+    Write-Host "[$Level] " -NoNewline -ForegroundColor $color
+    Write-Host $Message -ForegroundColor White
+}
+
+Clear-Host
+Write-Host "==============================================================================" -ForegroundColor Magenta
+Write-Host "  BetterTitus v0.8 Beta (Revised) - by fugaztweaks" -ForegroundColor White
+Write-Host "  Console Verbose Output Active | Todos os logs serao exibidos aqui" -ForegroundColor DarkGray
+Write-Host "==============================================================================" -ForegroundColor Magenta
 
 # ==============================================================================
 # RESOLUÇÃO DO PERFIL INTERATIVO REAL (CORREÇÃO HKCU ELEVADO)
@@ -42,7 +76,7 @@ function Resolve-InteractiveUserContext {
     $userName = $env:USERNAME
     $userProfile = $env:USERPROFILE
     try {
-        $csUser = (Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue).UserName
+        $csUser = (Get-CimInstance Win32_ComputerSystem -OperationTimeoutSec 4 -ErrorAction Stop).UserName
         if (-not [string]::IsNullOrWhiteSpace($csUser)) {
             $userName = $csUser
             $ntAcc = New-Object System.Security.Principal.NTAccount($csUser)
@@ -55,7 +89,9 @@ function Resolve-InteractiveUserContext {
                 $userProfile = $profPath
             }
         }
-    } catch {}
+    } catch {
+        Write-BTLog "Aviso ao resolver perfil interativo via WMI: $($_.Exception.Message)" "WARN"
+    }
     return [PSCustomObject]@{
         UserName    = $userName
         RegRoot     = $regRoot
@@ -64,6 +100,7 @@ function Resolve-InteractiveUserContext {
 }
 
 $script:UserCtx = Resolve-InteractiveUserContext
+Write-BTLog "Perfil Interativo: $($script:UserCtx.UserName) | Pasta: $($script:UserCtx.UserProfile) | Root: $($script:UserCtx.RegRoot)" "INFO"
 
 function Resolve-RegPath ([string]$Path) {
     if ($Path -like "HKCU:\*") {
@@ -72,8 +109,47 @@ function Resolve-RegPath ([string]$Path) {
     return $Path
 }
 
+function Set-Reg ([string]$Path, [string]$Name, $Value, [string]$Type = "DWord") {
+    $resolved = Resolve-RegPath $Path
+    if (-not (Test-Path $resolved)) { New-Item -Path $resolved -Force -ErrorAction Stop | Out-Null }
+    Set-ItemProperty -Path $resolved -Name $Name -Value $Value -Type $Type -Force -ErrorAction Stop
+}
+
+function Get-Reg ([string]$Path, [string]$Name, $Default = $null) {
+    try {
+        $resolved = Resolve-RegPath $Path
+        if (Test-Path $resolved) {
+            $prop = Get-ItemProperty -Path $resolved -Name $Name -ErrorAction SilentlyContinue
+            if ($null -ne $prop) {
+                $pInfo = $prop.PSObject.Properties[$Name]
+                if ($null -ne $pInfo -and $null -ne $pInfo.Value) {
+                    return $pInfo.Value
+                }
+            }
+        }
+    } catch {
+        Write-BTLog "Erro ao ler registro [$Path -> $Name]: $($_.Exception.Message)" "WARN"
+    }
+    return $Default
+}
+
+function Remove-RegValueSafe ([string]$Path, [string]$Name) {
+    try {
+        $resolved = Resolve-RegPath $Path
+        if (Test-Path $resolved) {
+            Remove-ItemProperty -Path $resolved -Name $Name -ErrorAction SilentlyContinue
+            $item = Get-Item -Path $resolved -ErrorAction SilentlyContinue
+            if ($null -ne $item -and $item.Property.Count -eq 0 -and $item.SubKeyCount -eq 0) {
+                Remove-Item -Path $resolved -Force -ErrorAction SilentlyContinue
+            }
+        }
+    } catch {
+        Write-BTLog "Erro ao remover valor [$Path -> $Name]: $($_.Exception.Message)" "WARN"
+    }
+}
+
 # ==============================================================================
-# MOTOR NATIVO C# (CACHEADO EM DLL PARA INICIALIZAÇÃO INSTANTÂNEA)
+# MOTOR NATIVO C# (CACHEADO EM DLL COM TRATAMENTO DE ERROS E REPARSE POINTS)
 # ==============================================================================
 $csSource = @"
 using System;
@@ -156,7 +232,8 @@ namespace BetterTitus {
                                     next.Add(d);
                             }
                         }
-                    } catch { }
+                    } catch (UnauthorizedAccessException) { }
+                      catch (IOException) { }
                 }
                 current = next;
                 if (current.Count == 0) break;
@@ -170,12 +247,15 @@ namespace BetterTitus {
             try {
                 if ((dir.Attributes & FileAttributes.ReparsePoint) != 0) return 0;
                 foreach (FileInfo fi in dir.EnumerateFiles("*", SearchOption.TopDirectoryOnly)) {
-                    try { total += fi.Length; } catch { }
+                    try { total += fi.Length; }
+                    catch (UnauthorizedAccessException) { }
+                    catch (IOException) { }
                 }
                 foreach (DirectoryInfo sub in dir.EnumerateDirectories("*", SearchOption.TopDirectoryOnly)) {
                     total += GetDirSizeSafe(sub);
                 }
-            } catch { }
+            } catch (UnauthorizedAccessException) { }
+              catch (IOException) { }
             return total;
         }
 
@@ -190,7 +270,8 @@ namespace BetterTitus {
                         } else if (Directory.Exists(target)) {
                             total += GetDirSizeSafe(new DirectoryInfo(target));
                         }
-                    } catch { }
+                    } catch (UnauthorizedAccessException) { }
+                      catch (IOException) { }
                 }
             }
             return total;
@@ -203,15 +284,19 @@ namespace BetterTitus {
                     try {
                         fi.Attributes = FileAttributes.Normal;
                         fi.Delete();
-                    } catch { }
+                    } catch (UnauthorizedAccessException) { }
+                      catch (IOException) { }
                 }
                 foreach (DirectoryInfo sub in dir.EnumerateDirectories("*", SearchOption.TopDirectoryOnly)) {
                     DeleteDirSafe(sub, true);
                 }
                 if (removeRoot) {
-                    try { dir.Delete(false); } catch { }
+                    try { dir.Delete(false); }
+                    catch (UnauthorizedAccessException) { }
+                    catch (IOException) { }
                 }
-            } catch { }
+            } catch (UnauthorizedAccessException) { }
+              catch (IOException) { }
         }
 
         public static void CleanPattern(string[] patterns) {
@@ -227,7 +312,8 @@ namespace BetterTitus {
                         } else if (Directory.Exists(target)) {
                             DeleteDirSafe(new DirectoryInfo(target), !isWildcardContent || pat.IndexOf('*') < pat.Length - 1);
                         }
-                    } catch { }
+                    } catch (UnauthorizedAccessException) { }
+                      catch (IOException) { }
                 }
             }
         }
@@ -237,19 +323,30 @@ namespace BetterTitus {
 
 if (-not ([System.Management.Automation.PSTypeName]'BetterTitus.FastCleaner').Type) {
     if (Test-Path $script:CleanerDll) {
-        try { Add-Type -Path $script:CleanerDll -ErrorAction Stop } catch { Remove-Item $script:CleanerDll -Force -ErrorAction SilentlyContinue }
+        try {
+            Add-Type -Path $script:CleanerDll -ErrorAction Stop
+        } catch {
+            Write-BTLog "Cache FastCleaner.dll inválido ou desatualizado; recompilando: $($_.Exception.Message)" "WARN"
+            Remove-Item $script:CleanerDll -Force -ErrorAction SilentlyContinue
+        }
     }
     if (-not ([System.Management.Automation.PSTypeName]'BetterTitus.FastCleaner').Type) {
-        Add-Type -TypeDefinition $csSource -OutputAssembly $script:CleanerDll -OutputType Library -ErrorAction Stop
-        Add-Type -Path $script:CleanerDll -ErrorAction Stop
+        try {
+            Add-Type -TypeDefinition $csSource -OutputAssembly $script:CleanerDll -OutputType Library -ErrorAction Stop
+            Add-Type -Path $script:CleanerDll -ErrorAction Stop
+        } catch {
+            Write-BTLog "Falha ao salvar DLL em disco ($($_.Exception.Message)); compilando em memória." "WARN"
+            Add-Type -TypeDefinition $csSource -ErrorAction Stop
+        }
     }
 }
 
 # ==============================================================================
-# GERADOR DE ÍCONE PERSONALIZADO (.ICO 256x256 - CACHEADO)
+# GERADOR DE ÍCONE PERSONALIZADO (.ICO 256x256 - COM FALLBACK SEGURO)
 # ==============================================================================
 function Ensure-BetterTitusIcon ([string]$OutIcoPath) {
     if (Test-Path $OutIcoPath) { return }
+    if (-not $script:HasDrawing) { return }
     try {
         $size = 256
         $bmp = New-Object System.Drawing.Bitmap($size, $size, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
@@ -303,11 +400,16 @@ function Ensure-BetterTitusIcon ([string]$OutIcoPath) {
         [System.IO.File]::WriteAllBytes($OutIcoPath, $icoMs.ToArray())
         $bw.Dispose(); $icoMs.Dispose(); $pngMs.Dispose()
         $borderPen.Dispose(); $boltBrush.Dispose(); $bgBrush.Dispose(); $path.Dispose(); $g.Dispose(); $bmp.Dispose()
-    } catch {}
+    } catch {
+        Write-BTLog "Falha ao gerar ícone personalizado: $($_.Exception.Message)" "WARN"
+    }
 }
 
 Ensure-BetterTitusIcon $script:IconPath
 
+# ==============================================================================
+# INTERFACE XAML (COM DYNAMICRESOURCES PARA TEMAS DARK & LIGHT COMPLETOS)
+# ==============================================================================
 [xml]$xaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -326,7 +428,11 @@ Ensure-BetterTitusIcon $script:IconPath
     <Window.Resources>
         <SolidColorBrush x:Key="BgMain" Color="#111017"/>
         <SolidColorBrush x:Key="BgPanel" Color="#171520"/>
+        <SolidColorBrush x:Key="BgCard" Color="#111017"/>
+        <SolidColorBrush x:Key="BgCardHover" Color="#211D30"/>
+        <SolidColorBrush x:Key="BgCardSelected" Color="#282042"/>
         <SolidColorBrush x:Key="BgHeader" Color="#0C0B10"/>
+        <SolidColorBrush x:Key="BgInput" Color="#221E30"/>
         <SolidColorBrush x:Key="BgBtn" Color="#221E30"/>
         <SolidColorBrush x:Key="BgBtnHover" Color="#2F2944"/>
         <SolidColorBrush x:Key="BgBtnActive" Color="#7C3AED"/>
@@ -338,9 +444,9 @@ Ensure-BetterTitusIcon $script:IconPath
         <SolidColorBrush x:Key="PurpleAccent" Color="#7C3AED"/>
 
         <Style TargetType="ToolTip">
-            <Setter Property="Background" Value="#1B172B"/>
-            <Setter Property="Foreground" Value="#F3F4F6"/>
-            <Setter Property="BorderBrush" Value="#8B5CF6"/>
+            <Setter Property="Background" Value="{DynamicResource BgPanel}"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextMain}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderHighlight}"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="Padding" Value="10,8"/>
             <Setter Property="FontSize" Value="12"/>
@@ -383,6 +489,7 @@ Ensure-BetterTitusIcon $script:IconPath
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
                                 <Setter TargetName="bd" Property="Background" Value="{DynamicResource BgBtnActive}"/>
+                                <Setter Property="Foreground" Value="#FFFFFF"/>
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter TargetName="bd" Property="Opacity" Value="0.45"/>
@@ -416,7 +523,7 @@ Ensure-BetterTitusIcon $script:IconPath
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
                             <Border x:Name="chkBox" Width="14" Height="14" CornerRadius="3"
-                                    Background="#1B1826" BorderBrush="#4C446B" BorderThickness="1"
+                                    Background="{DynamicResource BgInput}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1"
                                     VerticalAlignment="Center" HorizontalAlignment="Left">
                                 <Path x:Name="chkMark" Data="M 2.5,6.5 L 5.5,9.5 L 11.5,3.5" Stroke="#FFFFFF" StrokeThickness="1.8" Visibility="Collapsed"/>
                             </Border>
@@ -424,7 +531,7 @@ Ensure-BetterTitusIcon $script:IconPath
                         </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="chkBox" Property="BorderBrush" Value="#A78BFA"/>
+                                <Setter TargetName="chkBox" Property="BorderBrush" Value="{DynamicResource BorderHighlight}"/>
                             </Trigger>
                             <Trigger Property="IsChecked" Value="True">
                                 <Setter TargetName="chkBox" Property="Background" Value="#7C3AED"/>
@@ -456,7 +563,7 @@ Ensure-BetterTitusIcon $script:IconPath
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
                             <Border x:Name="Track" Grid.Column="0" Width="38" Height="19" CornerRadius="9.5"
-                                    Background="#242033" BorderBrush="#4C446B" BorderThickness="1"
+                                    Background="{DynamicResource BgInput}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1"
                                     VerticalAlignment="Center" HorizontalAlignment="Left">
                                 <Ellipse x:Name="Thumb" Width="13" Height="13" Fill="#A39EB8"
                                          HorizontalAlignment="Left" VerticalAlignment="Center" Margin="2,0,0,0"
@@ -470,7 +577,7 @@ Ensure-BetterTitusIcon $script:IconPath
                         </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Track" Property="BorderBrush" Value="#A78BFA"/>
+                                <Setter TargetName="Track" Property="BorderBrush" Value="{DynamicResource BorderHighlight}"/>
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter Property="Opacity" Value="0.45"/>
@@ -516,17 +623,17 @@ Ensure-BetterTitusIcon $script:IconPath
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="ListBoxItem">
-                        <Border x:Name="ItemBorder" Background="#161421" BorderBrush="#262238" BorderThickness="1" CornerRadius="5" Padding="14,10">
+                        <Border x:Name="ItemBorder" Background="{DynamicResource BgCard}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="5" Padding="14,10">
                             <ContentPresenter/>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="ItemBorder" Property="Background" Value="#211D30"/>
-                                <Setter TargetName="ItemBorder" Property="BorderBrush" Value="#5B4699"/>
+                                <Setter TargetName="ItemBorder" Property="Background" Value="{DynamicResource BgCardHover}"/>
+                                <Setter TargetName="ItemBorder" Property="BorderBrush" Value="{DynamicResource BorderHighlight}"/>
                             </Trigger>
                             <Trigger Property="IsSelected" Value="True">
-                                <Setter TargetName="ItemBorder" Property="Background" Value="#282042"/>
-                                <Setter TargetName="ItemBorder" Property="BorderBrush" Value="#8B5CF6"/>
+                                <Setter TargetName="ItemBorder" Property="Background" Value="{DynamicResource BgCardSelected}"/>
+                                <Setter TargetName="ItemBorder" Property="BorderBrush" Value="{DynamicResource BorderHighlight}"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -536,7 +643,7 @@ Ensure-BetterTitusIcon $script:IconPath
     </Window.Resources>
 
     <!-- Borda Externa da Janela -->
-    <Border Background="{DynamicResource BgMain}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="5">
+    <Border x:Name="RootBorder" Background="{DynamicResource BgMain}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="5">
         <Grid>
             <Grid.RowDefinitions>
                 <RowDefinition Height="46"/>
@@ -577,8 +684,8 @@ Ensure-BetterTitusIcon $script:IconPath
                         <StackPanel VerticalAlignment="Center">
                             <StackPanel Orientation="Horizontal">
                                 <TextBlock Text="BetterTitus" Foreground="{DynamicResource TextMain}" FontWeight="Bold" FontSize="13.5"/>
-                                <Border Background="#2D2642" BorderBrush="#7C3AED" BorderThickness="1" CornerRadius="3" Padding="5,0" Margin="6,0,0,0" VerticalAlignment="Center">
-                                    <TextBlock Text="Version 0.8 Beta" Foreground="#A78BFA" FontSize="10" FontWeight="SemiBold"/>
+                                <Border Background="{DynamicResource BgInput}" BorderBrush="{DynamicResource BorderHighlight}" BorderThickness="1" CornerRadius="3" Padding="5,0" Margin="6,0,0,0" VerticalAlignment="Center">
+                                    <TextBlock Text="Version 0.8 Beta" Foreground="{DynamicResource PurpleHeader}" FontSize="10" FontWeight="SemiBold"/>
                                 </Border>
                             </StackPanel>
                             <TextBlock Text="by fugaztweaks" Foreground="{DynamicResource TextDim}" FontSize="10" Margin="0,-1,0,0"/>
@@ -587,21 +694,21 @@ Ensure-BetterTitusIcon $script:IconPath
 
                     <!-- Abas de Navegação -->
                     <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                        <Button x:Name="BtnNavTweaks" Content="Tweaks" Style="{StaticResource NavTabBtn}" Background="#7C3AED" BorderBrush="#A78BFA"/>
+                        <Button x:Name="BtnNavTweaks" Content="Tweaks" Style="{StaticResource NavTabBtn}" Background="#7C3AED" Foreground="#FFFFFF" BorderBrush="#A78BFA"/>
                         <Button x:Name="BtnNavGaming" Content="Gaming" Style="{StaticResource NavTabBtn}"/>
                         <Button x:Name="BtnNavDeepClean" Content="Deep Clean" Style="{StaticResource NavTabBtn}"/>
                         <Button x:Name="BtnNavAdvanced" Content="Advanced" Style="{StaticResource NavTabBtn}"/>
                     </StackPanel>
 
-                    <!-- Barra de Busca Central -->
-                    <Border Grid.Column="2" Background="#171520" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="4" Height="28" Margin="14,0">
+                    <!-- Barra de Busca Central Global -->
+                    <Border Grid.Column="2" Background="{DynamicResource BgPanel}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="4" Height="28" Margin="14,0">
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="30"/>
                             </Grid.ColumnDefinitions>
                             <TextBox x:Name="TxtSearch" Grid.Column="0" Background="Transparent" Foreground="{DynamicResource TextMain}" BorderThickness="0" VerticalContentAlignment="Center" Padding="8,0" FontSize="12" CaretBrush="{DynamicResource TextMain}"/>
-                            <TextBlock x:Name="LblSearchPlaceholder" Grid.Column="0" Text="Search tweaks or preferences..." Foreground="{DynamicResource TextDim}" VerticalAlignment="Center" Margin="10,0,0,0" IsHitTestVisible="False">
+                            <TextBlock x:Name="LblSearchPlaceholder" Grid.Column="0" Text="Search tweaks, games or cleanup..." Foreground="{DynamicResource TextDim}" VerticalAlignment="Center" Margin="10,0,0,0" IsHitTestVisible="False">
                                 <TextBlock.Style>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="Visibility" Value="Collapsed"/>
@@ -613,12 +720,12 @@ Ensure-BetterTitusIcon $script:IconPath
                                     </Style>
                                 </TextBlock.Style>
                             </TextBlock>
-                            <TextBlock Grid.Column="1" Text="🔍" FontSize="11" Foreground="#A78BFA" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Column="1" Text="🔍" FontSize="11" Foreground="{DynamicResource PurpleHeader}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Grid>
                     </Border>
 
                     <!-- Seletor de Idioma -->
-                    <Border Grid.Column="3" Background="#171520" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="4" Height="28" Margin="0,0,10,0" Padding="2">
+                    <Border Grid.Column="3" Background="{DynamicResource BgPanel}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="4" Height="28" Margin="0,0,10,0" Padding="2">
                         <StackPanel Orientation="Horizontal">
                             <Button x:Name="BtnLangEN" Content="English" Style="{StaticResource BTButton}" Margin="0" Padding="9,2" BorderThickness="0"/>
                             <Button x:Name="BtnLangPT" Content="Português (BR)" Style="{StaticResource BTButton}" Margin="2,0,0,0" Padding="9,2" BorderThickness="0"/>
@@ -663,8 +770,8 @@ Ensure-BetterTitusIcon $script:IconPath
                     <StackPanel Grid.Column="1" HorizontalAlignment="Right">
                         <TextBlock x:Name="LblNativeTools" Text="Native Windows Tools:" Foreground="{DynamicResource PurpleHeader}" FontSize="12" FontWeight="SemiBold" Margin="2,0,0,4"/>
                         <WrapPanel Orientation="Horizontal">
-                            <Button x:Name="BtnOpenCleanmgr" Content="🧹 Disk Cleanup (cleanmgr)" Style="{StaticResource BTButton}" Background="#2D2642" BorderBrush="#8B5CF6"/>
-                            <Button x:Name="BtnCreateRestore" Content="🛡️ Create Restore Point" Style="{StaticResource BTButton}" Background="#2D2642" BorderBrush="#8B5CF6" Margin="0,0,0,4"/>
+                            <Button x:Name="BtnOpenCleanmgr" Content="🧹 Disk Cleanup (cleanmgr)" Style="{StaticResource BTButton}" BorderBrush="#8B5CF6"/>
+                            <Button x:Name="BtnCreateRestore" Content="🛡️ Create Restore Point" Style="{StaticResource BTButton}" BorderBrush="#8B5CF6" Margin="0,0,0,4"/>
                         </WrapPanel>
                     </StackPanel>
                 </Grid>
@@ -808,7 +915,7 @@ Ensure-BetterTitusIcon $script:IconPath
                             <TextBlock x:Name="SubGameList" Text="Select a game to configure automatic optimizations." Foreground="{DynamicResource TextDim}" FontSize="11.5" TextWrapping="Wrap" Margin="0,2,0,0"/>
                         </StackPanel>
 
-                        <ListBox x:Name="LstGames" Grid.Row="1" Background="#111017" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" 
+                        <ListBox x:Name="LstGames" Grid.Row="1" Background="{DynamicResource BgCard}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" 
                                  Padding="6" SelectionMode="Single" ItemContainerStyle="{StaticResource GameListBoxItemStyle}"
                                  ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                             <ListBox.ItemTemplate>
@@ -819,18 +926,18 @@ Ensure-BetterTitusIcon $script:IconPath
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
                                         <TextBlock Grid.Column="0" Text="{Binding Name}" FontWeight="Bold" FontSize="13.5" Foreground="{DynamicResource TextMain}" VerticalAlignment="Center"/>
-                                        <TextBlock Grid.Column="1" Text="{Binding Badge}" FontSize="10" FontWeight="SemiBold" Foreground="#A78BFA" VerticalAlignment="Center"/>
+                                        <TextBlock Grid.Column="1" Text="{Binding Badge}" FontSize="10" FontWeight="SemiBold" Foreground="{DynamicResource PurpleHeader}" VerticalAlignment="Center"/>
                                     </Grid>
                                 </DataTemplate>
                             </ListBox.ItemTemplate>
                         </ListBox>
 
-                        <Border Grid.Row="2" Background="#111017" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="4" Padding="12" Margin="0,12,0,0">
+                        <Border Grid.Row="2" Background="{DynamicResource BgCard}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="4" Padding="12" Margin="0,12,0,0">
                             <StackPanel>
                                 <TextBlock x:Name="HdrAddCustomGame" Text="Add Custom Game" FontFamily="Consolas" FontSize="13.5" FontWeight="Bold" Foreground="{DynamicResource PurpleHeader}" Margin="0,0,0,8"/>
                                 
                                 <TextBlock x:Name="LblGameName" Text="Game Name:" Foreground="{DynamicResource TextDim}" FontSize="11.5" Margin="0,0,0,2"/>
-                                <TextBox x:Name="TxtCustomGameName" Background="#221E30" Foreground="{DynamicResource TextMain}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" Height="26" Padding="6,2" Margin="0,0,0,8"/>
+                                <TextBox x:Name="TxtCustomGameName" Background="{DynamicResource BgInput}" Foreground="{DynamicResource TextMain}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" Height="26" Padding="6,2" Margin="0,0,0,8"/>
 
                                 <TextBlock x:Name="LblGameExe" Text="Executable (.exe):" Foreground="{DynamicResource TextDim}" FontSize="11.5" Margin="0,0,0,2"/>
                                 <Grid Margin="0,0,0,10">
@@ -838,12 +945,12 @@ Ensure-BetterTitusIcon $script:IconPath
                                         <ColumnDefinition Width="*"/>
                                         <ColumnDefinition Width="Auto"/>
                                     </Grid.ColumnDefinitions>
-                                    <TextBox x:Name="TxtCustomGameExe" Grid.Column="0" Background="#221E30" Foreground="{DynamicResource TextMain}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" Height="26" Padding="6,2" IsReadOnly="True"/>
+                                    <TextBox x:Name="TxtCustomGameExe" Grid.Column="0" Background="{DynamicResource BgInput}" Foreground="{DynamicResource TextMain}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" Height="26" Padding="6,2" IsReadOnly="True"/>
                                     <Button x:Name="BtnBrowseExe" Grid.Column="1" Content="Browse..." Style="{StaticResource BTButton}" Margin="6,0,0,0" Padding="12,2"/>
                                 </Grid>
 
                                 <UniformGrid Rows="1" Columns="2">
-                                    <Button x:Name="BtnAddGame" Content="Add to List" Style="{StaticResource BTButton}" Background="#7C3AED" BorderBrush="#A78BFA"/>
+                                    <Button x:Name="BtnAddGame" Content="Add to List" Style="{StaticResource BTButton}" Background="#7C3AED" Foreground="#FFFFFF" BorderBrush="#A78BFA"/>
                                     <Button x:Name="BtnRemoveGame" Content="Remove Selected" Style="{StaticResource BTButton}" Margin="0,0,0,4"/>
                                 </UniformGrid>
                             </StackPanel>
@@ -854,7 +961,7 @@ Ensure-BetterTitusIcon $script:IconPath
                 <Border Grid.Column="1" Background="{DynamicResource BgPanel}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="4" Margin="8,0,0,0" Padding="20">
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <StackPanel>
-                            <Border Background="#111017" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="4" Padding="16,12" Margin="0,0,0,14">
+                            <Border Background="{DynamicResource BgCard}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="4" Padding="16,12" Margin="0,0,0,14">
                                 <Grid>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*"/>
@@ -862,18 +969,18 @@ Ensure-BetterTitusIcon $script:IconPath
                                     </Grid.ColumnDefinitions>
                                     <StackPanel Grid.Column="0" VerticalAlignment="Center">
                                         <TextBlock x:Name="LblSelectedGameTitle" Text="VALORANT" FontSize="20" FontWeight="Bold" Foreground="{DynamicResource TextMain}"/>
-                                        <TextBlock x:Name="LblSelectedGameExe" Text="VALORANT-Win64-Shipping.exe" FontFamily="Consolas" FontSize="11.5" Foreground="#8B86A3" Margin="0,2,0,0"/>
+                                        <TextBlock x:Name="LblSelectedGameExe" Text="VALORANT-Win64-Shipping.exe" FontFamily="Consolas" FontSize="11.5" Foreground="{DynamicResource TextDim}" Margin="0,2,0,0"/>
                                     </StackPanel>
-                                    <Border Grid.Column="1" Background="#221E30" BorderBrush="#7C3AED" BorderThickness="1" CornerRadius="4" Padding="14,6" VerticalAlignment="Center">
+                                    <Border Grid.Column="1" Background="{DynamicResource BgInput}" BorderBrush="{DynamicResource BorderHighlight}" BorderThickness="1" CornerRadius="4" Padding="14,6" VerticalAlignment="Center">
                                         <StackPanel>
-                                            <TextBlock x:Name="LblCpuTopology" Text="CPU: Detecting..." FontFamily="Consolas" FontSize="11.5" Foreground="#A78BFA" FontWeight="Bold"/>
+                                            <TextBlock x:Name="LblCpuTopology" Text="CPU: Detecting..." FontFamily="Consolas" FontSize="11.5" Foreground="{DynamicResource PurpleHeader}" FontWeight="Bold"/>
                                             <TextBlock x:Name="LblCpuMaskInfo" Text="No-CPU0 Mask: Bitwise" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextDim}"/>
                                         </StackPanel>
                                     </Border>
                                 </Grid>
                             </Border>
 
-                            <Border Background="#111017" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="4" Padding="15" Margin="0,0,0,12">
+                            <Border x:Name="CardGameDscp" Background="{DynamicResource BgCard}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="4" Padding="15" Margin="0,0,0,12">
                                 <Grid>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*"/>
@@ -882,13 +989,13 @@ Ensure-BetterTitusIcon $script:IconPath
                                     <StackPanel Grid.Column="0" Margin="0,0,20,0">
                                         <TextBlock x:Name="HdrDscp" FontSize="14.5" FontWeight="Bold" Foreground="{DynamicResource PurpleHeader}"/>
                                         <TextBlock x:Name="DescDscp" Foreground="{DynamicResource TextDim}" FontSize="12" TextWrapping="Wrap" Margin="0,4,0,6"/>
-                                        <TextBlock x:Name="StatusDscp" FontFamily="Consolas" FontSize="11.5" Foreground="#9CA3AF"/>
+                                        <TextBlock x:Name="StatusDscp" FontFamily="Consolas" FontSize="11.5" Foreground="{DynamicResource TextDim}"/>
                                     </StackPanel>
                                     <CheckBox x:Name="TglGameDscp" Grid.Column="1" Style="{StaticResource BTToggleSwitch}" VerticalAlignment="Center"/>
                                 </Grid>
                             </Border>
 
-                            <Border Background="#111017" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="4" Padding="15" Margin="0,0,0,12">
+                            <Border x:Name="CardGameAffinity" Background="{DynamicResource BgCard}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="4" Padding="15" Margin="0,0,0,12">
                                 <Grid>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*"/>
@@ -897,13 +1004,13 @@ Ensure-BetterTitusIcon $script:IconPath
                                     <StackPanel Grid.Column="0" Margin="0,0,20,0">
                                         <TextBlock x:Name="HdrAffinity" FontSize="14.5" FontWeight="Bold" Foreground="{DynamicResource PurpleHeader}"/>
                                         <TextBlock x:Name="DescAffinity" Foreground="{DynamicResource TextDim}" FontSize="12" TextWrapping="Wrap" Margin="0,4,0,6"/>
-                                        <TextBlock x:Name="StatusAffinity" FontFamily="Consolas" FontSize="11.5" Foreground="#9CA3AF"/>
+                                        <TextBlock x:Name="StatusAffinity" FontFamily="Consolas" FontSize="11.5" Foreground="{DynamicResource TextDim}"/>
                                     </StackPanel>
                                     <CheckBox x:Name="TglGameAffinity" Grid.Column="1" Style="{StaticResource BTToggleSwitch}" VerticalAlignment="Center"/>
                                 </Grid>
                             </Border>
 
-                            <Border Background="#111017" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="4" Padding="15" Margin="0,0,0,12">
+                            <Border x:Name="CardGameDx11" Background="{DynamicResource BgCard}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="4" Padding="15" Margin="0,0,0,12">
                                 <Grid>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*"/>
@@ -912,13 +1019,13 @@ Ensure-BetterTitusIcon $script:IconPath
                                     <StackPanel Grid.Column="0" Margin="0,0,20,0">
                                         <TextBlock x:Name="HdrDx11" FontSize="14.5" FontWeight="Bold" Foreground="{DynamicResource PurpleHeader}"/>
                                         <TextBlock x:Name="DescDx11" Foreground="{DynamicResource TextDim}" FontSize="12" TextWrapping="Wrap" Margin="0,4,0,6"/>
-                                        <TextBlock x:Name="StatusDx11" FontFamily="Consolas" FontSize="11.5" Foreground="#9CA3AF"/>
+                                        <TextBlock x:Name="StatusDx11" FontFamily="Consolas" FontSize="11.5" Foreground="{DynamicResource TextDim}"/>
                                     </StackPanel>
                                     <CheckBox x:Name="TglGameDx11" Grid.Column="1" Style="{StaticResource BTToggleSwitch}" VerticalAlignment="Center"/>
                                 </Grid>
                             </Border>
 
-                            <Border Background="#111017" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="4" Padding="15" Margin="0,0,0,4">
+                            <Border x:Name="CardGameNvTel" Background="{DynamicResource BgCard}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="4" Padding="15" Margin="0,0,0,4">
                                 <Grid>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*"/>
@@ -927,7 +1034,7 @@ Ensure-BetterTitusIcon $script:IconPath
                                     <StackPanel Grid.Column="0" Margin="0,0,20,0">
                                         <TextBlock x:Name="HdrNvTel" FontSize="14.5" FontWeight="Bold" Foreground="{DynamicResource PurpleHeader}"/>
                                         <TextBlock x:Name="DescNvTel" Foreground="{DynamicResource TextDim}" FontSize="12" TextWrapping="Wrap" Margin="0,4,0,6"/>
-                                        <TextBlock x:Name="StatusNvTel" FontFamily="Consolas" FontSize="11.5" Foreground="#9CA3AF"/>
+                                        <TextBlock x:Name="StatusNvTel" FontFamily="Consolas" FontSize="11.5" Foreground="{DynamicResource TextDim}"/>
                                     </StackPanel>
                                     <CheckBox x:Name="TglGameNvTel" Grid.Column="1" Style="{StaticResource BTToggleSwitch}" VerticalAlignment="Center"/>
                                 </Grid>
@@ -938,7 +1045,7 @@ Ensure-BetterTitusIcon $script:IconPath
             </Grid>
 
             <!-- ====================================================================== -->
-            <!-- ABA 3: LIMPEZA PROFUNDA (DISM++ DEEP CLEAN - ASSÍNCRONO E INSTANTÂNEO) -->
+            <!-- ABA 3: LIMPEZA PROFUNDA (DISM++ DEEP CLEAN)                            -->
             <!-- ====================================================================== -->
             <Grid Grid.Row="1" x:Name="ViewDeepClean" Visibility="Collapsed" Margin="12,8,12,6">
                 <Grid.RowDefinitions>
@@ -957,12 +1064,12 @@ Ensure-BetterTitusIcon $script:IconPath
                             <TextBlock x:Name="SubDeepCleanDesc" Text="Select system caches, WinSxS superseded components, logs, and temporary files to purge safely." Foreground="{DynamicResource TextDim}" FontSize="11.5" Margin="0,2,0,0"/>
                         </StackPanel>
                         <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                            <TextBlock x:Name="LblCleanTotalSize" Text="Estimated: Requires scan" FontFamily="Consolas" FontSize="12" FontWeight="Bold" Foreground="#A78BFA" VerticalAlignment="Center" Margin="0,0,14,0"/>
+                            <TextBlock x:Name="LblCleanTotalSize" Text="Estimated: Requires scan" FontFamily="Consolas" FontSize="12" FontWeight="Bold" Foreground="{DynamicResource PurpleHeader}" VerticalAlignment="Center" Margin="0,0,14,0"/>
                             <Button x:Name="BtnCleanScan" Content="🔍 Scan Space" Style="{StaticResource BTButton}" BorderBrush="#8B5CF6" Margin="0,0,6,0"/>
                             <Button x:Name="BtnCleanDefault" Content="Default" Style="{StaticResource BTButton}" Margin="0,0,6,0"/>
                             <Button x:Name="BtnCleanAll" Content="Select All" Style="{StaticResource BTButton}" Margin="0,0,6,0"/>
                             <Button x:Name="BtnCleanNone" Content="None" Style="{StaticResource BTButton}" Margin="0,0,10,0"/>
-                            <Button x:Name="BtnCleanExecute" Content="🧹 Clean Selected" Style="{StaticResource BTButton}" Background="#7C3AED" BorderBrush="#A78BFA" FontWeight="Bold" Margin="0"/>
+                            <Button x:Name="BtnCleanExecute" Content="🧹 Clean Selected" Style="{StaticResource BTButton}" Background="#7C3AED" Foreground="#FFFFFF" BorderBrush="#A78BFA" FontWeight="Bold" Margin="0"/>
                         </StackPanel>
                     </Grid>
                 </Border>
@@ -973,23 +1080,23 @@ Ensure-BetterTitusIcon $script:IconPath
                         <ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
 
-                    <!-- Coluna Esquerda: Arquivos Expirados + Sistema + Aplicações -->
+                    <!-- Coluna Esquerda -->
                     <Border Grid.Column="0" Background="{DynamicResource BgPanel}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="4" Margin="0,0,5,0" Padding="16,12">
                         <ScrollViewer VerticalScrollBarVisibility="Auto">
-                            <StackPanel>
+                            <StackPanel x:Name="PanelCleanLeft">
                                 <CheckBox x:Name="CatExpired" IsChecked="True" Style="{StaticResource BTCheck}" FontFamily="Consolas" FontSize="14.5" FontWeight="Bold" Foreground="{DynamicResource PurpleHeader}" Margin="0,0,0,4"/>
                                 <StackPanel Margin="20,0,0,10">
                                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                         <CheckBox x:Name="ClnWinSxSSuperseded" IsChecked="True" Style="{StaticResource BTCheck}"/>
-                                        <TextBlock x:Name="SzWinSxSSuperseded" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="#9CA3AF" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="SzWinSxSSuperseded" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="{DynamicResource TextDim}" VerticalAlignment="Center"/>
                                     </Grid>
                                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                         <CheckBox x:Name="ClnDismResidual" IsChecked="True" Style="{StaticResource BTCheck}"/>
-                                        <TextBlock x:Name="SzDismResidual" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="#9CA3AF" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="SzDismResidual" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="{DynamicResource TextDim}" VerticalAlignment="Center"/>
                                     </Grid>
                                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                         <CheckBox x:Name="ClnChromeOldBackup" IsChecked="True" Style="{StaticResource BTCheck}"/>
-                                        <TextBlock x:Name="SzChromeOldBackup" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="#9CA3AF" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="SzChromeOldBackup" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="{DynamicResource TextDim}" VerticalAlignment="Center"/>
                                     </Grid>
                                 </StackPanel>
 
@@ -997,23 +1104,23 @@ Ensure-BetterTitusIcon $script:IconPath
                                 <StackPanel Margin="20,0,0,10">
                                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                         <CheckBox x:Name="ClnWerReports" IsChecked="True" Style="{StaticResource BTCheck}"/>
-                                        <TextBlock x:Name="SzWerReports" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="#9CA3AF" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="SzWerReports" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="{DynamicResource TextDim}" VerticalAlignment="Center"/>
                                     </Grid>
                                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                         <CheckBox x:Name="ClnWinEvents" IsChecked="True" Style="{StaticResource BTCheck}"/>
-                                        <TextBlock x:Name="SzWinEvents" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="#9CA3AF" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="SzWinEvents" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="{DynamicResource TextDim}" VerticalAlignment="Center"/>
                                     </Grid>
                                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                         <CheckBox x:Name="ClnWinUpdateHistory" IsChecked="True" Style="{StaticResource BTCheck}"/>
-                                        <TextBlock x:Name="SzWinUpdateHistory" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="#9CA3AF" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="SzWinUpdateHistory" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="{DynamicResource TextDim}" VerticalAlignment="Center"/>
                                     </Grid>
                                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                         <CheckBox x:Name="ClnDamagedAppx" IsChecked="True" Style="{StaticResource BTCheck}"/>
-                                        <TextBlock x:Name="SzDamagedAppx" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="#9CA3AF" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="SzDamagedAppx" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="{DynamicResource TextDim}" VerticalAlignment="Center"/>
                                     </Grid>
                                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                         <CheckBox x:Name="ClnRestorePoints" IsChecked="True" Style="{StaticResource BTCheck}"/>
-                                        <TextBlock x:Name="SzRestorePoints" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="#9CA3AF" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="SzRestorePoints" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="{DynamicResource TextDim}" VerticalAlignment="Center"/>
                                     </Grid>
                                 </StackPanel>
 
@@ -1021,54 +1128,54 @@ Ensure-BetterTitusIcon $script:IconPath
                                 <StackPanel Margin="20,0,0,4">
                                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                         <CheckBox x:Name="ClnPackageCache" IsChecked="True" Style="{StaticResource BTCheck}"/>
-                                        <TextBlock x:Name="SzPackageCache" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="#9CA3AF" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="SzPackageCache" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="{DynamicResource TextDim}" VerticalAlignment="Center"/>
                                     </Grid>
                                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                         <CheckBox x:Name="ClnDefenderHistory" IsChecked="True" Style="{StaticResource BTCheck}"/>
-                                        <TextBlock x:Name="SzDefenderHistory" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="#9CA3AF" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="SzDefenderHistory" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="{DynamicResource TextDim}" VerticalAlignment="Center"/>
                                     </Grid>
                                 </StackPanel>
                             </StackPanel>
                         </ScrollViewer>
                     </Border>
 
-                    <!-- Coluna Direita: Arquivos de Cache + Arquivos Temporários -->
+                    <!-- Coluna Direita -->
                     <Border Grid.Column="1" Background="{DynamicResource BgPanel}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="4" Margin="5,0,0,0" Padding="16,12">
                         <ScrollViewer VerticalScrollBarVisibility="Auto">
-                            <StackPanel>
+                            <StackPanel x:Name="PanelCleanRight">
                                 <CheckBox x:Name="CatCache" IsChecked="True" Style="{StaticResource BTCheck}" FontFamily="Consolas" FontSize="14.5" FontWeight="Bold" Foreground="{DynamicResource PurpleHeader}" Margin="0,0,0,4"/>
                                 <StackPanel Margin="20,0,0,10">
                                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                         <CheckBox x:Name="ClnWinDownloadCache" IsChecked="True" Style="{StaticResource BTCheck}"/>
-                                        <TextBlock x:Name="SzWinDownloadCache" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="#9CA3AF" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="SzWinDownloadCache" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="{DynamicResource TextDim}" VerticalAlignment="Center"/>
                                     </Grid>
                                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                         <CheckBox x:Name="ClnDeliveryOptCache" IsChecked="True" Style="{StaticResource BTCheck}"/>
-                                        <TextBlock x:Name="SzDeliveryOptCache" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="#9CA3AF" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="SzDeliveryOptCache" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="{DynamicResource TextDim}" VerticalAlignment="Center"/>
                                     </Grid>
                                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                         <CheckBox x:Name="ClnRdpClientCache" IsChecked="True" Style="{StaticResource BTCheck}"/>
-                                        <TextBlock x:Name="SzRdpClientCache" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="#9CA3AF" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="SzRdpClientCache" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="{DynamicResource TextDim}" VerticalAlignment="Center"/>
                                     </Grid>
                                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                         <CheckBox x:Name="ClnNetAssemblyCache" IsChecked="True" Style="{StaticResource BTCheck}"/>
-                                        <TextBlock x:Name="SzNetAssemblyCache" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="#9CA3AF" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="SzNetAssemblyCache" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="{DynamicResource TextDim}" VerticalAlignment="Center"/>
                                     </Grid>
                                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                         <CheckBox x:Name="ClnPrefetchFiles" IsChecked="True" Style="{StaticResource BTCheck}"/>
-                                        <TextBlock x:Name="SzPrefetchFiles" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="#9CA3AF" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="SzPrefetchFiles" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="{DynamicResource TextDim}" VerticalAlignment="Center"/>
                                     </Grid>
                                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                         <CheckBox x:Name="ClnThumbnailCache" IsChecked="True" Style="{StaticResource BTCheck}"/>
-                                        <TextBlock x:Name="SzThumbnailCache" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="#9CA3AF" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="SzThumbnailCache" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="{DynamicResource TextDim}" VerticalAlignment="Center"/>
                                     </Grid>
                                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                         <CheckBox x:Name="ClnWinInetWebCache" IsChecked="True" Style="{StaticResource BTCheck}"/>
-                                        <TextBlock x:Name="SzWinInetWebCache" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="#9CA3AF" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="SzWinInetWebCache" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="{DynamicResource TextDim}" VerticalAlignment="Center"/>
                                     </Grid>
                                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                         <CheckBox x:Name="ClnWinInetCookies" IsChecked="True" Style="{StaticResource BTCheck}"/>
-                                        <TextBlock x:Name="SzWinInetCookies" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="#9CA3AF" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="SzWinInetCookies" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="{DynamicResource TextDim}" VerticalAlignment="Center"/>
                                     </Grid>
                                 </StackPanel>
 
@@ -1076,31 +1183,31 @@ Ensure-BetterTitusIcon $script:IconPath
                                 <StackPanel Margin="20,0,0,4">
                                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                         <CheckBox x:Name="ClnWinSxSTemp" IsChecked="True" Style="{StaticResource BTCheck}"/>
-                                        <TextBlock x:Name="SzWinSxSTemp" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="#9CA3AF" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="SzWinSxSTemp" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="{DynamicResource TextDim}" VerticalAlignment="Center"/>
                                     </Grid>
                                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                         <CheckBox x:Name="ClnWindowsLogs" IsChecked="True" Style="{StaticResource BTCheck}"/>
-                                        <TextBlock x:Name="SzWindowsLogs" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="#9CA3AF" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="SzWindowsLogs" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="{DynamicResource TextDim}" VerticalAlignment="Center"/>
                                     </Grid>
                                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                         <CheckBox x:Name="ClnTempFiles" IsChecked="True" Style="{StaticResource BTCheck}"/>
-                                        <TextBlock x:Name="SzTempFiles" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="#9CA3AF" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="SzTempFiles" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="{DynamicResource TextDim}" VerticalAlignment="Center"/>
                                     </Grid>
                                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                         <CheckBox x:Name="ClnRecycleBin" IsChecked="True" Style="{StaticResource BTCheck}"/>
-                                        <TextBlock x:Name="SzRecycleBin" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="#9CA3AF" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="SzRecycleBin" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="{DynamicResource TextDim}" VerticalAlignment="Center"/>
                                     </Grid>
                                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                         <CheckBox x:Name="ClnCrashDumps" IsChecked="True" Style="{StaticResource BTCheck}"/>
-                                        <TextBlock x:Name="SzCrashDumps" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="#9CA3AF" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="SzCrashDumps" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="{DynamicResource TextDim}" VerticalAlignment="Center"/>
                                     </Grid>
                                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                         <CheckBox x:Name="ClnMaJunkFiles" IsChecked="True" Style="{StaticResource BTCheck}"/>
-                                        <TextBlock x:Name="SzMaJunkFiles" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="#9CA3AF" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="SzMaJunkFiles" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="{DynamicResource TextDim}" VerticalAlignment="Center"/>
                                     </Grid>
                                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                         <CheckBox x:Name="ClnIdmTempFiles" IsChecked="False" Style="{StaticResource BTCheck}"/>
-                                        <TextBlock x:Name="SzIdmTempFiles" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="#9CA3AF" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="SzIdmTempFiles" Grid.Column="1" FontFamily="Consolas" FontSize="11.5" Foreground="{DynamicResource TextDim}" VerticalAlignment="Center"/>
                                     </Grid>
                                 </StackPanel>
                             </StackPanel>
@@ -1123,7 +1230,7 @@ Ensure-BetterTitusIcon $script:IconPath
                             <TextBlock x:Name="StatusWinUpdateCard" Text="Status: Checking..." FontWeight="Bold" Foreground="{DynamicResource TextMain}" FontSize="12.5" Margin="0,0,0,14"/>
                             <WrapPanel Orientation="Horizontal">
                                 <Button x:Name="BtnDisableWinUpdate" Style="{StaticResource BTButton}" Padding="18,7"/>
-                                <Button x:Name="BtnRestoreWinUpdate" Style="{StaticResource BTButton}" Background="#7C3AED" BorderBrush="#A78BFA" Padding="18,7"/>
+                                <Button x:Name="BtnRestoreWinUpdate" Style="{StaticResource BTButton}" Background="#7C3AED" Foreground="#FFFFFF" BorderBrush="#A78BFA" Padding="18,7"/>
                             </WrapPanel>
                         </StackPanel>
                     </Border>
@@ -1133,7 +1240,7 @@ Ensure-BetterTitusIcon $script:IconPath
                             <TextBlock x:Name="HdrNetResetCard" FontSize="17" FontWeight="Bold" Foreground="{DynamicResource PurpleHeader}" Margin="0,0,0,8"/>
                             <TextBlock x:Name="DescNetResetCard" Foreground="{DynamicResource TextDim}" FontSize="12.5" TextWrapping="Wrap" Margin="0,0,0,14"/>
                             <WrapPanel Orientation="Horizontal">
-                                <Button x:Name="BtnAdvCleanmgr" Style="{StaticResource BTButton}" Background="#7C3AED" BorderBrush="#A78BFA" Padding="16,7"/>
+                                <Button x:Name="BtnAdvCleanmgr" Style="{StaticResource BTButton}" Background="#7C3AED" Foreground="#FFFFFF" BorderBrush="#A78BFA" Padding="16,7"/>
                                 <Button x:Name="BtnAdvCleanCache" Style="{StaticResource BTButton}" Padding="16,7"/>
                                 <Button x:Name="BtnAdvFlushNet" Style="{StaticResource BTButton}" Padding="16,7"/>
                             </WrapPanel>
@@ -1142,7 +1249,7 @@ Ensure-BetterTitusIcon $script:IconPath
                 </StackPanel>
             </Grid>
 
-            <!-- 4. RODAPÉ LIMPO (SEM LOG INTERNO - TODO LOG SAI NO CONSOLE POWERSHELL) -->
+            <!-- 4. RODAPÉ -->
             <Border Grid.Row="2" Background="{DynamicResource BgHeader}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="0,1,0,0" Padding="16,0">
                 <Grid VerticalAlignment="Center">
                     <Grid.ColumnDefinitions>
@@ -1153,7 +1260,7 @@ Ensure-BetterTitusIcon $script:IconPath
                     <TextBlock Grid.Column="0" x:Name="LblFooterNote" Foreground="{DynamicResource PurpleHeader}" FontSize="12" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,16,0"/>
 
                     <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                        <Button x:Name="BtnRunTweaks" Style="{StaticResource BTButton}" Background="#7C3AED" BorderBrush="#A78BFA" Padding="20,8" FontWeight="Bold" Margin="0,0,8,0"/>
+                        <Button x:Name="BtnRunTweaks" Style="{StaticResource BTButton}" Background="#7C3AED" Foreground="#FFFFFF" BorderBrush="#A78BFA" Padding="20,8" FontWeight="Bold" Margin="0,0,8,0"/>
                         <Button x:Name="BtnUndoTweaks" Style="{StaticResource BTButton}" Padding="18,8" Margin="0"/>
                     </StackPanel>
                 </Grid>
@@ -1169,7 +1276,9 @@ $window = [Windows.Markup.XamlReader]::Load($reader)
 if (Test-Path $script:IconPath) {
     try {
         $window.Icon = [System.Windows.Media.Imaging.BitmapFrame]::Create((New-Object System.Uri($script:IconPath, [System.UriKind]::Absolute)))
-    } catch {}
+    } catch {
+        Write-BTLog "Aviso ao carregar ícone da janela: $($_.Exception.Message)" "WARN"
+    }
 }
 
 $xaml.SelectNodes("//*[@*[contains(translate(name(.),'n','N'),'Name')]]") | ForEach-Object {
@@ -1182,61 +1291,8 @@ $xaml.SelectNodes("//*[@*[contains(translate(name(.),'n','N'),'Name')]]") | ForE
 }
 
 # ==============================================================================
-# SISTEMA DE LOG DIRETO NO TERMINAL POWERSHELL (ESTILO CHRIS TITUS TECH)
+# HELPERS DE EXECUÇÃO, SERVIÇOS, BACKUPS E HARDWARE
 # ==============================================================================
-function Write-BTLog ([string]$Message, [string]$Level = "INFO") {
-    $time = Get-Date -Format "HH:mm:ss"
-    $color = switch ($Level) {
-        "OK"      { "Green" }
-        "WARN"    { "Yellow" }
-        "ERROR"   { "Red" }
-        "PARTIAL" { "DarkYellow" }
-        "HEADER"  { "Magenta" }
-        default   { "Cyan" }
-    }
-    Write-Host "[$time] " -NoNewline -ForegroundColor DarkGray
-    Write-Host "[$Level] " -NoNewline -ForegroundColor $color
-    Write-Host $Message -ForegroundColor White
-}
-
-Clear-Host
-Write-Host "==============================================================================" -ForegroundColor Magenta
-Write-Host "  BetterTitus v0.8 Beta - by fugaztweaks" -ForegroundColor White
-Write-Host "  Console Verbose Output Active | Todos os logs serao exibidos aqui" -ForegroundColor DarkGray
-Write-Host "==============================================================================" -ForegroundColor Magenta
-Write-BTLog "Perfil Interativo: $($script:UserCtx.UserName) | Pasta: $($script:UserCtx.UserProfile) | Root: $($script:UserCtx.RegRoot)" "INFO"
-
-function Set-Reg ([string]$Path, [string]$Name, $Value, [string]$Type = "DWord") {
-    $resolved = Resolve-RegPath $Path
-    if (-not (Test-Path $resolved)) { New-Item -Path $resolved -Force -ErrorAction Stop | Out-Null }
-    Set-ItemProperty -Path $resolved -Name $Name -Value $Value -Type $Type -Force -ErrorAction Stop
-}
-
-function Get-Reg ([string]$Path, [string]$Name, $Default = $null) {
-    try {
-        $resolved = Resolve-RegPath $Path
-        if (Test-Path $resolved) {
-            $prop = Get-ItemProperty -Path $resolved -Name $Name -ErrorAction SilentlyContinue
-            if ($null -ne $prop -and $null -ne $prop.$Name) { return $prop.$Name }
-        }
-    } catch {}
-    return $Default
-}
-
-function Remove-RegValueSafe ([string]$Path, [string]$Name) {
-    $resolved = Resolve-RegPath $Path
-    if (Test-Path $resolved) {
-        Remove-ItemProperty -Path $resolved -Name $Name -ErrorAction SilentlyContinue
-    }
-}
-
-function Remove-RegKeySafe ([string]$Path) {
-    $resolved = Resolve-RegPath $Path
-    if (Test-Path $resolved) {
-        Remove-Item -Path $resolved -Recurse -Force -ErrorAction SilentlyContinue
-    }
-}
-
 function Invoke-SafeTweak ([string]$Title, [scriptblock]$Action, [scriptblock]$Verify = $null) {
     try {
         & $Action
@@ -1281,25 +1337,104 @@ function Set-ServiceStartModeSafe ([string]$ServiceName, [int]$StartValue) {
     return $true
 }
 
+function Backup-CoreServicesState ([string[]]$ServiceNames) {
+    $existing = @{}
+    if (Test-Path $script:CoreSvcBackup) {
+        try {
+            $loaded = Get-Content $script:CoreSvcBackup -Raw | ConvertFrom-Json
+            foreach ($p in $loaded.PSObject.Properties) { $existing[$p.Name] = $p.Value }
+        } catch {}
+    }
+    $changed = $false
+    foreach ($svcName in $ServiceNames) {
+        if (-not $existing.ContainsKey($svcName)) {
+            $st = Get-ServiceStartModeFast $svcName
+            if ($st -in @(2, 3, 4)) {
+                $svcObj = Get-Service -Name $svcName -ErrorAction SilentlyContinue
+                $existing[$svcName] = [PSCustomObject]@{
+                    Start      = $st
+                    WasRunning = ($null -ne $svcObj -and $svcObj.Status -eq 'Running')
+                }
+                $changed = $true
+            }
+        }
+    }
+    if ($changed -and $existing.Count -gt 0) {
+        $existing | ConvertTo-Json -Depth 3 | Set-Content -Path $script:CoreSvcBackup -Encoding UTF8 -Force
+    }
+}
+
+function Restore-CoreServicesState ([string[]]$ServiceNames) {
+    $saved = @{}
+    if (Test-Path $script:CoreSvcBackup) {
+        try {
+            $loaded = Get-Content $script:CoreSvcBackup -Raw | ConvertFrom-Json
+            foreach ($p in $loaded.PSObject.Properties) { $saved[$p.Name] = $p.Value }
+        } catch {}
+    }
+    $modified = $false
+    foreach ($svcName in $ServiceNames) {
+        if ($saved.ContainsKey($svcName)) {
+            $entry = $saved[$svcName]
+            $st = [int]$entry.Start
+            if ($st -notin @(2, 3, 4)) { $st = 3 }
+            [void](Set-ServiceStartModeSafe $svcName $st)
+            $wasRun = ($entry.WasRunning -is [bool] -and $entry.WasRunning) -or ($entry.WasRunning.ToString() -ieq "true")
+            if ($wasRun) { Start-Service -Name $svcName -ErrorAction SilentlyContinue }
+            $saved.Remove($svcName)
+            $modified = $true
+        } else {
+            if ((Get-ServiceStartModeFast $svcName) -ne -1) {
+                [void](Set-ServiceStartModeSafe $svcName 3)
+            }
+        }
+    }
+    if ($modified) {
+        if ($saved.Count -gt 0) { $saved | ConvertTo-Json -Depth 3 | Set-Content -Path $script:CoreSvcBackup -Encoding UTF8 -Force }
+        else { Remove-Item $script:CoreSvcBackup -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 function Test-ScheduledTaskSafe ([string]$TaskPath, [string]$TaskName) {
     return ($null -ne (Get-ScheduledTask -TaskPath $TaskPath -TaskName $TaskName -ErrorAction SilentlyContinue))
 }
 
+function Get-CleanId ([string]$exeName) { return ($exeName -replace '[^a-zA-Z0-9]', '_') }
+
 function Initialize-HardwareCache {
-    $procs = Get-CimInstance Win32_Processor -ErrorAction SilentlyContinue
-    $cores = ($procs | Measure-Object -Property NumberOfCores -Sum).Sum
-    $threads = ($procs | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum
-    if (-not $cores -or $cores -lt 1) { $cores = [Environment]::ProcessorCount }
-    if (-not $threads -or $threads -lt 1) { $threads = [Environment]::ProcessorCount }
+    $cores = [Environment]::ProcessorCount
+    $threads = [Environment]::ProcessorCount
+    try {
+        $procs = Get-CimInstance Win32_Processor -OperationTimeoutSec 4 -ErrorAction Stop
+        $cSum = ($procs | Measure-Object -Property NumberOfCores -Sum).Sum
+        $tSum = ($procs | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum
+        if ($cSum -ge 1) { $cores = $cSum }
+        if ($tSum -ge 1) { $threads = $tSum }
+    } catch {
+        Write-BTLog "Timeout/erro WMI ao ler CPU; usando fallback ($threads threads)." "WARN"
+    }
 
-    $ramBytes = (Get-CimInstance Win32_PhysicalMemory -ErrorAction SilentlyContinue | Measure-Object -Property Capacity -Sum).Sum
-    $ramKB = if ($ramBytes -gt 0) { [int64]($ramBytes / 1KB) } else { [int64]0 }
+    $ramKB = [int64]0
+    try {
+        $ramBytes = (Get-CimInstance Win32_PhysicalMemory -OperationTimeoutSec 4 -ErrorAction Stop | Measure-Object -Property Capacity -Sum).Sum
+        if ($ramBytes -gt 0) { $ramKB = [int64]($ramBytes / 1KB) }
+    } catch {
+        Write-BTLog "Timeout/erro WMI ao ler memória física: $($_.Exception.Message)" "WARN"
+    }
 
-    $gpuNames = ((Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue).Name -join " ")
-    $hasNv = ($gpuNames -match 'NVIDIA') -or ((Get-ServiceStartModeFast "NVDisplay.ContainerLocalSystem") -ne -1) -or ((Get-ServiceStartModeFast "NvContainerLocalSystem") -ne -1)
+    $hasNv = $false
+    try {
+        $gpuNames = ((Get-CimInstance Win32_VideoController -OperationTimeoutSec 4 -ErrorAction Stop).Name -join " ")
+        $hasNv = ($gpuNames -match 'NVIDIA') -or ((Get-ServiceStartModeFast "NVDisplay.ContainerLocalSystem") -ne -1) -or ((Get-ServiceStartModeFast "NvContainerLocalSystem") -ne -1)
+    } catch {
+        $hasNv = ((Get-ServiceStartModeFast "NVDisplay.ContainerLocalSystem") -ne -1) -or ((Get-ServiceStartModeFast "NvContainerLocalSystem") -ne -1)
+    }
 
-    $osCim = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
-    $osSku = if ($osCim) { [int]$osCim.OperatingSystemSKU } else { 0 }
+    $osSku = 0
+    try {
+        $osCim = Get-CimInstance Win32_OperatingSystem -OperationTimeoutSec 4 -ErrorAction Stop
+        if ($osCim) { $osSku = [int]$osCim.OperatingSystemSKU }
+    } catch {}
 
     return [PSCustomObject]@{
         Cores      = $cores
@@ -1307,6 +1442,21 @@ function Initialize-HardwareCache {
         RamKB      = $ramKB
         HasNvidia  = $hasNv
         OsSku      = $osSku
+    }
+}
+
+function Refresh-NvidiaPresence {
+    $prev = $script:HwInfo.HasNvidia
+    $hasNv = ((Get-ServiceStartModeFast "NVDisplay.ContainerLocalSystem") -ne -1) -or ((Get-ServiceStartModeFast "NvContainerLocalSystem") -ne -1)
+    if (-not $hasNv) {
+        try {
+            $gpuNames = ((Get-CimInstance Win32_VideoController -OperationTimeoutSec 3 -ErrorAction Stop).Name -join " ")
+            $hasNv = ($gpuNames -match 'NVIDIA')
+        } catch {}
+    }
+    $script:HwInfo.HasNvidia = $hasNv
+    if ($prev -ne $hasNv) {
+        Write-BTLog "Cache de hardware NVIDIA atualizado: HasNvidia = $hasNv" "INFO"
     }
 }
 
@@ -1330,27 +1480,65 @@ $script:OptionalScheduledTasks = @(
     "\Microsoft\Windows\Feedback\Siuf\DmClient"
 )
 
-function Restore-NvidiaBackupIfNeeded {
-    if (Test-Path $script:NvBackup) {
+$script:AllowedNvServices = @("NVDisplay.ContainerLocalSystem", "NvContainerLocalSystem")
+
+function Restore-NvidiaBackupForGame ([string]$GameId) {
+    $bkpFile = "$script:ConfigDir\nv_backup_$GameId.json"
+    if (Test-Path $bkpFile) {
         try {
-            $bkp = Get-Content $script:NvBackup -Raw | ConvertFrom-Json
+            $bkp = Get-Content $bkpFile -Raw | ConvertFrom-Json
             foreach ($entry in $bkp) {
+                $svcName = $entry.Name.ToString()
+                if ($svcName -notin $script:AllowedNvServices) {
+                    Write-BTLog "Nome de serviço não permitido ignorado no backup NVIDIA: $svcName" "WARN"
+                    continue
+                }
                 $startVal = [int]$entry.Start
                 if ($startVal -notin @(2, 3, 4)) { $startVal = 2 }
-                $reg = "HKLM:\SYSTEM\CurrentControlSet\Services\$($entry.Name)"
+                $reg = "HKLM:\SYSTEM\CurrentControlSet\Services\$svcName"
                 if (Test-Path $reg) {
                     Set-ItemProperty -Path $reg -Name "Start" -Value $startVal -Type DWord -Force -ErrorAction SilentlyContinue
                     $wasRun = ($entry.WasRunning -is [bool] -and $entry.WasRunning) -or ($entry.WasRunning.ToString() -ieq "true")
-                    if ($wasRun) { Start-Service -Name $entry.Name -ErrorAction SilentlyContinue }
+                    if ($wasRun) { Start-Service -Name $svcName -ErrorAction SilentlyContinue }
                 }
             }
-            Remove-Item $script:NvBackup -Force -ErrorAction SilentlyContinue
-            Write-BTLog "Estado original dos serviços NVIDIA restaurado a partir do backup validado." "OK"
+            Remove-Item $bkpFile -Force -ErrorAction SilentlyContinue
+            Write-BTLog "Estado original dos serviços NVIDIA restaurado para [$GameId]." "OK"
         } catch {
-            Write-BTLog "Erro ao restaurar backup NVIDIA: $($_.Exception.Message)" "ERROR"
+            Write-BTLog "Erro ao restaurar backup NVIDIA [$GameId]: $($_.Exception.Message)" "ERROR"
         }
     }
 }
+
+# ==============================================================================
+# PERSISTÊNCIA DE CONFIGURAÇÕES (IDIOMA E TEMA)
+# ==============================================================================
+function Load-UserAppSettings {
+    $uiCultureName = [System.Globalization.CultureInfo]::InstalledUICulture.Name
+    $defLang = if ($uiCultureName -like "pt*") { "PT" } else { "EN" }
+    $cfg = [PSCustomObject]@{ Lang = $defLang; IsDark = $true }
+    if (Test-Path $script:SettingsJson) {
+        try {
+            $loaded = Get-Content $script:SettingsJson -Raw | ConvertFrom-Json
+            if ($loaded.Lang -in @("PT", "EN")) { $cfg.Lang = $loaded.Lang }
+            if ($null -ne $loaded.IsDark) { $cfg.IsDark = [bool]$loaded.IsDark }
+        } catch {}
+    }
+    return $cfg
+}
+
+function Save-UserAppSettings {
+    try {
+        [PSCustomObject]@{
+            Lang   = $script:Lang
+            IsDark = $script:isDark
+        } | ConvertTo-Json -Depth 2 | Set-Content -Path $script:SettingsJson -Encoding UTF8 -Force
+    } catch {}
+}
+
+$appSettings = Load-UserAppSettings
+$script:Lang = $appSettings.Lang
+$script:isDark = $appSettings.IsDark
 
 # ==============================================================================
 # DICIONÁRIO CENTRALIZADO DE TEXTOS E TOOLTIPS BILÍNGUES (PT-BR & EN)
@@ -1390,45 +1578,45 @@ $script:ControlMeta = @{
                               TipPT="O que faz: Altera 10 serviços secundários seguros para Manual (com backup para reversão exata).";
                               TipEN="What it does: Sets 10 safe non-essential services to Manual (with backup for exact revert)." }
     "ChkTelemetry"       = @{ PT="Telemetria e Coleta de Dados - Desativar (?)"; EN="Telemetry & Data Collection - Disable (?)";
-                              TipPT="O que faz: Define AllowTelemetry=0 e desativa DiagTrack.`nNota: O Windows Home/Pro limita o nível mínimo a 1 (Básico); o nível 0 completo é aplicado apenas em Enterprise/Education.";
-                              TipEN="What it does: Sets AllowTelemetry=0 and disables DiagTrack.`nNote: Windows Home/Pro enforces minimum level 1 (Basic); full level 0 applies only to Enterprise/Education." }
+                              TipPT="O que faz: Define AllowTelemetry=0 e desativa DiagTrack (com backup do estado original).`nNota: O Windows Home/Pro limita o nível mínimo a 1 (Básico).";
+                              TipEN="What it does: Sets AllowTelemetry=0 and disables DiagTrack (backing up original state).`nNote: Windows Home/Pro enforces minimum level 1 (Basic)." }
     "ChkWidgets"         = @{ PT="Widgets da Barra de Tarefas - Remover (?)"; EN="Widgets (News & Interests) - Remove (?)";
-                              TipPT="O que faz: Desativa o painel de Widgets/Notícias via registro e política Dsh (compatível com Win 11 22H2+).";
-                              TipEN="What it does: Disables Taskbar Widgets/News via registry and Dsh policy (Win 11 22H2+ compatible)." }
+                              TipPT="O que faz: Desativa o painel de Widgets/Notícias via registro e política Dsh (preserva demais políticas).";
+                              TipEN="What it does: Disables Taskbar Widgets/News via registry and Dsh policy (preserves other policies)." }
     "ChkWPBT"            = @{ PT="Tabela Binária da Plataforma (WPBT) - Desativar (?)"; EN="Windows Platform Binary Table (WPBT) - Disable (?)";
                               TipPT="O que faz: Impede que o BIOS/UEFI injete executáveis de fabricantes no Windows.";
                               TipEN="What it does: Blocks motherboard firmware from injecting vendor software during boot." }
     "ChkSearchIdx"       = @{ PT="Indexação do Windows Search - Desativar (?)"; EN="Windows Search Indexing - Disable (?)";
-                              TipPT="O que faz: Desativa o serviço WSearch de indexação contínua de arquivos.";
-                              TipEN="What it does: Disables the WSearch continuous file indexing service." }
+                              TipPT="O que faz: Desativa o serviço WSearch de indexação contínua de arquivos (salva estado anterior para reversão).";
+                              TipEN="What it does: Disables the WSearch continuous file indexing service (saves original state for revert)." }
 
     "ChkBgApps"          = @{ PT="Aplicativos da Loja em Segundo Plano - Desativar (?)"; EN="Background Store Apps - Disable (?)";
                               TipPT="O que faz: Impede apps UWP da Microsoft Store de rodarem ocultos em segundo plano.";
                               TipEN="What it does: Prevents Microsoft Store UWP apps from running in the background." }
     "ChkOptTasks"        = @{ PT="Tarefas Agendadas de Telemetria - Desativar (?)"; EN="Optional Telemetry Scheduled Tasks - Disable (?)";
-                              TipPT="O que faz: Desativa tarefas agendadas de coleta (Compatibility Appraiser, CEIP, UsbCeip, Feedback).";
-                              TipEN="What it does: Disables scheduled telemetry tasks (Compatibility Appraiser, CEIP, UsbCeip, Feedback)." }
+                              TipPT="O que faz: Desativa tarefas agendadas de coleta (salva individualmente quais estavam ativas antes).";
+                              TipEN="What it does: Disables scheduled telemetry tasks (saves each task's individual state before disabling)." }
     "ChkReservedStorage" = @{ PT="Armazenamento Reservado do Windows - Desativar (?)"; EN="Windows Reserved Storage - Disable (?)";
-                              TipPT="O que faz: Desativa a reserva automática de ~7 GB usada pelo Windows Update (libera espaço após o próximo update cumulativo).";
-                              TipEN="What it does: Disables the ~7 GB storage partition reserved for Windows Updates (reclaimed after next cumulative update)." }
+                              TipPT="O que faz: Desativa a reserva automática de ~7 GB usada pelo Windows Update.";
+                              TipEN="What it does: Disables the ~7 GB storage partition reserved for Windows Updates." }
     "ChkExplorerGallery" = @{ PT="Galeria e Início no Explorer (Win 11) - Ocultar (?)"; EN="File Explorer Home & Gallery (Win 11) - Hide (?)";
                               TipPT="O que faz: Remove os atalhos 'Galeria' e 'Início' do painel esquerdo do Explorer.";
                               TipEN="What it does: Hides Gallery and Home clutter from the Win 11 Explorer sidebar." }
     "ChkGameDVR"         = @{ PT="GameDVR e Captura Xbox - Desativar (?)"; EN="GameDVR & Xbox Background Capture - Disable (?)";
-                              TipPT="O que faz: Desativa gravação em segundo plano, AppCapture e políticas GameDVR (Win 10/11 22H2+).";
-                              TipEN="What it does: Disables background recording, AppCapture, and GameDVR policies (Win 10/11 22H2+)." }
+                              TipPT="O que faz: Desativa gravação em segundo plano, AppCapture e política AllowGameDVR.";
+                              TipEN="What it does: Disables background recording, AppCapture, and AllowGameDVR policy." }
     "ChkIPv4Pref"        = @{ PT="Rede IPv6 - Definir IPv4 como Preferencial (?)"; EN="IPv6 - Set IPv4 as Preferred (?)";
-                              TipPT="O que faz: Define DisabledComponents=32 (salva o valor original antes) para priorizar IPv4 sem quebrar redes corporativas ou VPNs.";
-                              TipEN="What it does: Sets DisabledComponents=32 (backs up previous value) to prefer IPv4 without breaking corporate networks or VPNs." }
+                              TipPT="O que faz: Define DisabledComponents=32 (salva o valor original antes) para priorizar IPv4 sem quebrar VPNs.";
+                              TipEN="What it does: Sets DisabledComponents=32 (backs up previous value) to prefer IPv4 without breaking VPNs." }
     "ChkTeredo"          = @{ PT="Túnel Teredo IPv6 - Desativar (?)"; EN="Teredo Tunneling - Disable (?)";
-                              TipPT="O que faz: Desativa apenas a interface de tunelamento legado Teredo via netsh e política.";
-                              TipEN="What it does: Disables legacy Teredo IPv6 tunneling via netsh and policy." }
+                              TipPT="O que faz: Desativa a interface de tunelamento legado Teredo via netsh (validando código de saída) e política.";
+                              TipEN="What it does: Disables legacy Teredo IPv6 tunneling via netsh (checking exit code) and policy." }
     "ChkMenuDelay"       = @{ PT="Atraso de Menus (Zero Delay 0ms) - Ativar (?)"; EN="MenuShowDelay (Zero Delay 0ms) - Enable (?)";
                               TipPT="O que faz: Muda MenuShowDelay de 400ms para 0ms.";
                               TipEN="What it does: Changes MenuShowDelay from 400ms to 0ms." }
     "ChkEdgeDebloat"     = @{ PT="Processos em Segundo Plano do Edge - Desativar (?)"; EN="Microsoft Edge Background Processes - Disable (?)";
-                              TipPT="O que faz: Desativa Startup Boost e execução em segundo plano do Edge (reversão remove a política por completo).";
-                              TipEN="What it does: Disables Edge Startup Boost and Background Mode (revert removes the policy key completely)." }
+                              TipPT="O que faz: Desativa Startup Boost e execução em segundo plano do Edge (reversão remove apenas os 2 valores criados).";
+                              TipEN="What it does: Disables Edge Startup Boost and Background Mode (revert removes only the 2 created values)." }
     "ChkNetThrottle"     = @{ PT="Limitação de Rede (Network Throttling) - Otimizar (?)"; EN="Network Throttling Index - Optimize (?)";
                               TipPT="O que faz: Define NetworkThrottlingIndex=0xFFFFFFFF e SystemResponsiveness=0.";
                               TipEN="What it does: Sets NetworkThrottlingIndex=0xFFFFFFFF and SystemResponsiveness=0." }
@@ -1442,8 +1630,8 @@ $script:ControlMeta = @{
                               TipPT="O que faz: Desativa a varredura periódica automática de disco do Windows.";
                               TipEN="What it does: Disables automatic periodic Storage Sense scans." }
     "ChkSvcHost"         = @{ PT="Divisão de Processos SvcHost - Ajustar para sua RAM (?)"; EN="SvcHost Split Threshold - Match Physical RAM (?)";
-                              TipPT="O que faz: Ajusta SvcHostSplitThresholdInKB exatamente para a sua RAM física detectada.";
-                              TipEN="What it does: Matches SvcHostSplitThresholdInKB to your detected physical RAM." }
+                              TipPT="O que faz: Ajusta SvcHostSplitThresholdInKB exatamente para sua RAM física (padrão Windows: 3670016 KB / 3.5 GB).";
+                              TipEN="What it does: Matches SvcHostSplitThresholdInKB to your physical RAM (Windows default: 3670016 KB / 3.5 GB)." }
     "ChkUsbSuspend"      = @{ PT="Suspensão Seletiva USB - Desativar (?)"; EN="USB Selective Suspend - Disable (?)";
                               TipPT="O que faz: Impede o Windows de desligar portas USB ociosas.";
                               TipEN="What it does: Prevents Windows from powering down idle USB ports." }
@@ -1451,8 +1639,8 @@ $script:ControlMeta = @{
                               TipPT="O que faz: Desativa animações pesadas de janelas e transparências desnecessárias.";
                               TipEN="What it does: Disables heavy window animations and shadows." }
     "ChkWinAI"           = @{ PT="Windows AI (Copilot e Recall) - Desativar (?)"; EN="Windows AI (Copilot & Recall) - Disable (?)";
-                              TipPT="O que faz: Desativa políticas do Windows Copilot e impede capturas do Windows Recall.";
-                              TipEN="What it does: Disables Windows Copilot and blocks Windows Recall snapshots." }
+                              TipPT="O que faz: Desativa políticas do Windows Copilot e Windows Recall (preservando demais políticas do sistema).";
+                              TipEN="What it does: Disables Windows Copilot and Recall policies (preserving other system policies)." }
 
     "ChkBitLocker"       = @{ PT="BitLocker (Criptografia de Disco) - Desativar [CONFIRMAÇÃO DUPLA] (?)"; EN="BitLocker (Drive Encryption) - Disable [DOUBLE CONFIRM] (?)";
                               TipPT="Inicia a descriptografia da unidade do sistema (C:) em segundo plano se o BitLocker estiver ativo.";
@@ -1464,7 +1652,7 @@ $script:ControlMeta = @{
                               TipPT="Desativa mitigações Spectre/Meltdown para menor latência de syscalls.";
                               TipEN="Disables Spectre/Meltdown mitigations for lower syscall overhead." }
 
-    "TglBsod"            = @{ PT="Tela Azul Detalhada (BSoD Verbose + Sem Auto-Reboot)"; EN="BSoD Verbose Mode (+ Disable Auto-Reboot)"; TipPT="Exibe códigos técnicos na Tela Azul e impede reinício imediato antes de você ler o erro."; TipEN="Shows technical parameters on Blue Screen errors and disables immediate auto-reboot." }
+    "TglBsod"            = @{ PT="Tela Azul Detalhada (BSoD Verbose + Sem Auto-Reboot)"; EN="BSoD Verbose Mode (+ Disable Auto-Reboot)"; TipPT="Exibe códigos técnicos na Tela Azul e impede reinício imediato (salva AutoReboot original)."; TipEN="Shows technical parameters on Blue Screen errors and disables auto-reboot (backs up original AutoReboot)." }
     "TglDarkWin"         = @{ PT="Tema Escuro para o Windows"; EN="Dark Theme for Windows"; TipPT="Alterna o tema escuro nativo do Windows e notifica o shell em tempo real."; TipEN="Toggles Windows native Dark Mode and notifies the shell in real time." }
     "TglLongPaths"       = @{ PT="Habilitar Caminhos Longos (>260 caracteres)"; EN="Enable Long Paths (>260 chars)"; TipPT="Remove o limite legado de 260 caracteres em nomes de pastas/arquivos."; TipEN="Removes legacy 260-character file path limit." }
     "TglFastStart"       = @{ PT="Inicialização Rápida (Fast Startup)"; EN="Fast Startup (Hiberboot)"; TipPT="Indisponível se a Hibernação estiver desativada (requer hiberfil.sys)."; TipEN="Unavailable when Hibernation is disabled (requires hiberfil.sys)." }
@@ -1474,7 +1662,7 @@ $script:ControlMeta = @{
     "TglAcrylic"         = @{ PT="Desfoque Acrílico na Tela de Login"; EN="Logon Screen Acrylic Blur"; TipPT="Ativa ou remove o efeito de desfoque na tela de bloqueio."; TipEN="Toggles the acrylic blur effect on the Windows sign-in screen." }
     "TglVerboseLogon"    = @{ PT="Mensagens Detalhadas de Inicialização/Logon"; EN="Logon Verbose Mode"; TipPT="Exibe qual serviço está iniciando/encerrando durante o boot."; TipEN="Displays detailed status messages during startup and shutdown." }
     "TglMouseAccel"      = @{ PT="Aceleração do Ponteiro do Mouse"; EN="Mouse Acceleration"; TipPT="Desative para precisão linear 1:1 em jogos competitivos (aplica na hora via SystemParametersInfo)."; TipEN="Turn OFF for true 1:1 raw linear mouse movement in FPS games (applies live via SystemParametersInfo)." }
-    "TglMmProfile"       = @{ PT="Perfil Multimídia de Jogos (MMCSS)"; EN="Multimedia Gaming Profile (MMCSS)"; TipPT="Define GPU Priority=8, Priority=6 e Scheduling Category=High."; TipEN="Sets GPU Priority=8, Priority=6, and High scheduling category." }
+    "TglMmProfile"       = @{ PT="Perfil Multimídia de Jogos (MMCSS)"; EN="Multimedia Gaming Profile (MMCSS)"; TipPT="Define GPU Priority=8, Priority=6 e Scheduling Category=High (com backup para restauração exata)."; TipEN="Sets GPU Priority=8, Priority=6, and High scheduling category (with backup for exact restore)." }
     "TglNumLock"         = @{ PT="Ativar Num Lock ao Ligar"; EN="Num Lock on Startup"; TipPT="Mantém o teclado numérico ativado automaticamente no boot."; TipEN="Automatically enables Num Lock when Windows starts." }
     "TglBingSearch"      = @{ PT="Pesquisa Web do Bing no Menu Iniciar"; EN="Start Menu Bing Search"; TipPT="Desative para deixar a busca do Menu Iniciar 100% local."; TipEN="Turn OFF to make Start Menu search 100% local and instant." }
     "TglStartRecs"       = @{ PT="Recomendações no Menu Iniciar"; EN="Start Menu Recommendations"; TipPT="Desative para remover arquivos recentes e sugestões do Menu Iniciar."; TipEN="Turn OFF to hide recommended files and tips in Start Menu." }
@@ -1488,7 +1676,7 @@ $script:ControlMeta = @{
     "CatExpired"           = @{ PT="Arquivos Expirados"; EN="Expired Files"; TipPT="Componentes substituídos do Windows, resíduos do DISM e backups antigos do Chrome."; TipEN="Superseded Windows components, DISM leftovers, and old Chrome backups." }
     "ClnWinSxSSuperseded"  = @{ PT="Assemblies Substituído no WinSxS (?)"; EN="Superseded Assemblies in WinSxS (?)"; TipPT="Executa DISM /StartComponentCleanup para remover componentes antigos substituídos."; TipEN="Runs DISM /StartComponentCleanup to remove old superseded components." }
     "ClnDismResidual"      = @{ PT="Arquivos residuais de versões anteriores do Dism (?)"; EN="Residual files from previous Dism versions (?)"; TipPT="Remove logs antigos (.bak) e pastas temporárias do DISM."; TipEN="Removes old .bak logs and temporary folders from DISM." }
-    "ClnChromeOldBackup"   = @{ PT="Arquivos de backup de versão antiga do Chrome (?)"; EN="Old Chrome version backup files (?)"; TipPT="Remove diretórios de versões anteriores e instaladores antigos do Google Chrome (feche o Chrome antes)."; TipEN="Removes old browser version folders and installer backups from Google Chrome (close Chrome first)." }
+    "ClnChromeOldBackup"   = @{ PT="Arquivos de backup de versão antiga do Chrome (?)"; EN="Old Chrome version backup files (?)"; TipPT="Remove apenas pastas de versões antigas (old_*) e caches temporários do Chrome, preservando o instalador da versão atual."; TipEN="Removes only old version folders (old_*) and Chrome temp caches, preserving the current version's installer." }
 
     "CatSystem"            = @{ PT="Sistema"; EN="System"; TipPT="Relatórios de erros, logs de eventos, histórico do Windows Update, pacotes Appx e pontos de restauração."; TipEN="Error reports, event logs, Windows Update history, damaged Appx, and restore points." }
     "ClnWerReports"        = @{ PT="Relatório de Erros do Windows (?)"; EN="Windows Error Reporting (?)"; TipPT="Limpa relatórios de falhas e arquivos de diagnóstico do WER."; TipEN="Clears crash reports and diagnostic archives from WER." }
@@ -1503,12 +1691,12 @@ $script:ControlMeta = @{
     "ClnRdpClientCache"    = @{ PT="Terminal Server Client Cache (?)"; EN="Terminal Server Client Cache (?)"; TipPT="Limpa o cache de bitmaps da Área de Trabalho Remota (mstsc.exe)."; TipEN="Clears Remote Desktop Connection bitmap cache files." }
     "ClnNetAssemblyCache"  = @{ PT="Cache do NET assembly (?)"; EN=".NET Assembly Cache (?)"; TipPT="Remove arquivos temporários compilados e logs de uso do .NET Framework."; TipEN="Removes temporary compiled files and usage logs from .NET Framework." }
     "ClnPrefetchFiles"     = @{ PT="Arquivos prefetch do Windows (?)"; EN="Windows Prefetch Files (?)"; TipPT="Limpa arquivos .pf antigos da pasta C:\Windows\Prefetch."; TipEN="Clears old .pf files from C:\Windows\Prefetch." }
-    "ClnThumbnailCache"    = @{ PT="Cache de Miniatura (Reinicia Explorer) (?)"; EN="Thumbnail Cache (Restarts Explorer) (?)"; TipPT="Encerra o explorer.exe antes de apagar thumbcache_*.db e iconcache_*.db e o reinicia logo em seguida."; TipEN="Stops explorer.exe before deleting thumbcache_*.db and iconcache_*.db and restarts it immediately after." }
+    "ClnThumbnailCache"    = @{ PT="Cache de Miniatura (Reinicia Explorer) (?)"; EN="Thumbnail Cache (Restarts Explorer) (?)"; TipPT="Encerra o explorer.exe antes de apagar thumbcache_*.db e iconcache_*.db e inicia apenas se o Windows não o tiver reiniciado."; TipEN="Stops explorer.exe before deleting thumbcache_*.db and iconcache_*.db and starts it only if Windows has not restarted it." }
     "ClnWinInetWebCache"   = @{ PT="Cache Web do WinINet (?)"; EN="WinINet Web Cache (?)"; TipPT="Limpa o cache de arquivos temporários da API WinINet."; TipEN="Clears temporary internet cache files managed by WinINet." }
     "ClnWinInetCookies"    = @{ PT="Cookies do WinINet (?)"; EN="WinINet Cookies (?)"; TipPT="Limpa cookies armazenados pela pilha WinINet do Windows."; TipEN="Clears cookies stored by the Windows WinINet stack." }
 
     "CatApps"              = @{ PT="Aplicações"; EN="Applications"; TipPT="Caches internos de pacotes da Store e histórico do Windows Defender."; TipEN="Internal Store package caches and Windows Defender protection history." }
-    "ClnPackageCache"      = @{ PT="Pasta de cache de pacote (?)"; EN="Package Cache Folder (?)"; TipPT="Limpa caches locais temporários de pacotes UWP/Store em LocalCache (feche apps da Store em execução para liberar todos os arquivos)."; TipEN="Clears temporary local caches inside UWP/Store app LocalCache folders (close running Store apps first)." }
+    "ClnPackageCache"      = @{ PT="Pasta de cache de pacote (?)"; EN="Package Cache Folder (?)"; TipPT="Limpa caches locais temporários de pacotes UWP/Store em LocalCache."; TipEN="Clears temporary local caches inside UWP/Store app LocalCache folders." }
     "ClnDefenderHistory"   = @{ PT="Windows Defender Histórico de Proteção (?)"; EN="Windows Defender Protection History (?)"; TipPT="Limpa o histórico de verificações e detecções antigas do Microsoft Defender."; TipEN="Clears old scan logs and protection history from Microsoft Defender." }
 
     "CatTemp"              = @{ PT="Arquivos Temporários"; EN="Temporary Files"; TipPT="Temporários do WinSxS, Logs, Temp, Lixeira, Crash Dumps, resíduos de atualização e IDM."; TipEN="WinSxS temp, Logs, Temp folders, Recycle Bin, Crash Dumps, upgrade junk, and IDM temp." }
@@ -1520,12 +1708,6 @@ $script:ControlMeta = @{
     "ClnMaJunkFiles"       = @{ PT="Arquivos inúteis de MA (?)"; EN="MA / Upgrade Junk Files (?)"; TipPT="Remove resíduos de atualizações de recursos do Windows."; TipEN="Removes Windows feature upgrade leftovers." }
     "ClnIdmTempFiles"      = @{ PT="Internet Download Manager temporary files (?)"; EN="Internet Download Manager temporary files (?)"; TipPT="Limpa downloads temporários incompletos do IDM (DwnlData). AVISO: Feche o IDM antes para não corromper downloads em andamento."; TipEN="Clears incomplete temporary IDM downloads (DwnlData). WARNING: Close IDM first to avoid corrupting active downloads." }
 }
-
-# ==============================================================================
-# SISTEMA DE IDIOMA INSTANTÂNEO (EN | PT-BR)
-# ==============================================================================
-$uiCultureName = [System.Globalization.CultureInfo]::InstalledUICulture.Name
-$script:Lang = if ($uiCultureName -like "pt*") { "PT" } else { "EN" }
 
 function Refresh-CachedStatusLabels {
     $valExtraPT = if ($script:GameStateCache.IsValorant) { " + Auto-Encerrar RiotClient" } else { "" }
@@ -1539,12 +1721,12 @@ function Refresh-CachedStatusLabels {
         $StatusAffinity.Text = if ($script:HwInfo.Threads -gt 64) {
             "Status: Indisponível (CPU com mais de 64 threads usa Processor Groups)"
         } elseif ($script:GameStateCache.Affinity) {
-            "Status: ATIVADO (Bitwise Sem CPU 0$valExtraPT)"
+            "Status: ATIVADO (Alta Prioridade + Bitwise Sem CPU 0$valExtraPT)"
         } else {
             "Status: Desativado"
         }
         $StatusDx11.Text = switch ($script:GameStateCache.Dx11State) {
-            "APPLIED"  { "Status: ATIVADO no Registro (Flags 211 aplicado)" }
+            "APPLIED"  { "Status: ATIVADO no Registro (Flags 0x211 aplicado)" }
             "WATCHING" { "Status: MONITORANDO (Aplicação automática na próxima abertura)" }
             default    { "Status: Desativado" }
         }
@@ -1555,7 +1737,7 @@ function Refresh-CachedStatusLabels {
         } else {
             "Status: Desativado"
         }
-        $StatusWinUpdateCard.Text = if ($script:WinUpdateDisabledCache) { "Status: Desativado (Serviços wuauserv/UsoSvc bloqueados)." } else { "Status: Ativo (Padrão do Windows)." }
+        $StatusWinUpdateCard.Text = if ($script:WinUpdateDisabledCache) { "Status: Desativado (wuauserv, UsoSvc e WaaSMedicSvc bloqueados)." } else { "Status: Ativo (Padrão do Windows)." }
     } else {
         $LblCpuTopology.Text = "CPU: $($script:HwInfo.Cores) Cores / $($script:HwInfo.Threads) Threads"
         $LblCpuMaskInfo.Text = if ($script:HwInfo.Threads -gt 64) { "Group >64 Threads (Unsupported)" } else { "Bitwise Affinity: No CPU 0" }
@@ -1564,12 +1746,12 @@ function Refresh-CachedStatusLabels {
         $StatusAffinity.Text = if ($script:HwInfo.Threads -gt 64) {
             "Status: Unavailable (CPUs over 64 threads use Processor Groups)"
         } elseif ($script:GameStateCache.Affinity) {
-            "Status: ENABLED (Bitwise No-CPU0$valExtraEN)"
+            "Status: ENABLED (High Priority + Bitwise No-CPU0$valExtraEN)"
         } else {
             "Status: Disabled"
         }
         $StatusDx11.Text = switch ($script:GameStateCache.Dx11State) {
-            "APPLIED"  { "Status: ENABLED in Registry (Flags 211 applied)" }
+            "APPLIED"  { "Status: ENABLED in Registry (Flags 0x211 applied)" }
             "WATCHING" { "Status: WATCHING (Auto-applies on next game launch)" }
             default    { "Status: Disabled" }
         }
@@ -1580,12 +1762,13 @@ function Refresh-CachedStatusLabels {
         } else {
             "Status: Disabled"
         }
-        $StatusWinUpdateCard.Text = if ($script:WinUpdateDisabledCache) { "Status: Disabled (wuauserv/UsoSvc blocked)." } else { "Status: Active (Windows Default)." }
+        $StatusWinUpdateCard.Text = if ($script:WinUpdateDisabledCache) { "Status: Disabled (wuauserv, UsoSvc & WaaSMedicSvc blocked)." } else { "Status: Active (Windows Default)." }
     }
 }
 
-function Set-AppLanguage ([string]$langCode) {
+function Set-AppLanguage ([string]$langCode, [bool]$Persist = $true) {
     $script:Lang = $langCode
+    if ($Persist) { Save-UserAppSettings }
 
     foreach ($key in $script:ControlMeta.Keys) {
         $ctrl = Get-Variable -Name $key -Scope Script -ValueOnly -ErrorAction SilentlyContinue
@@ -1597,11 +1780,11 @@ function Set-AppLanguage ([string]$langCode) {
     }
 
     if ($langCode -eq "PT") {
-        $BtnLangPT.Background = "#7C3AED"; $BtnLangPT.BorderBrush = "#A78BFA"
-        $BtnLangEN.Background = "Transparent"; $BtnLangEN.BorderBrush = "Transparent"
+        $BtnLangPT.Background = "#7C3AED"; $BtnLangPT.Foreground = "#FFFFFF"; $BtnLangPT.BorderBrush = "#A78BFA"
+        $BtnLangEN.Background = "Transparent"; $BtnLangEN.ClearValue([System.Windows.Controls.Control]::ForegroundProperty); $BtnLangEN.BorderBrush = "Transparent"
 
         $BtnNavTweaks.Content = "Otimizações"; $BtnNavGaming.Content = "Gaming"; $BtnNavDeepClean.Content = "Limpeza Profunda"; $BtnNavAdvanced.Content = "Avançado"
-        $LblSearchPlaceholder.Text = "Pesquisar otimização ou preferência..."
+        $LblSearchPlaceholder.Text = "Pesquisar otimização, jogo ou limpeza..."
         $LblRecTitle.Text = "Seleções Recomendadas:"
         $BtnPresetStd.Content = "Padrão"; $BtnPresetMin.Content = "Mínimo"; $BtnPresetAdv.Content = "Avançado"
         $BtnPresetClr.Content = "Desmarcar Tudo"; $BtnSelectInstalled.Content = "Detectar Otimizações Ativas"
@@ -1631,11 +1814,11 @@ function Set-AppLanguage ([string]$langCode) {
         $HdrDscp.Text = "Priorizar Rota de Jogo"
         $DescDscp.Text = "Prioriza o tráfego de rede do jogo selecionado usando política QoS DSCP 46 para reduzir jitter e perda de pacotes."
         $HdrAffinity.Text = "Prioridade Alta + Afinidade Otimizada"
-        $DescAffinity.Text = "Aplica prioridade Alta e libera a CPU lógica 0 via máscara bitwise (preservando demais cores) ao iniciar o jogo. No VALORANT, também encerra o RiotClientServices em segundo plano."
+        $DescAffinity.Text = "Aplica prioridade Alta e libera a CPU lógica 0 via máscara bitwise (preservando demais cores) ao iniciar o jogo. No VALORANT, encerra o RiotClientServices assim que o jogo estabiliza."
         $HdrDx11.Text = "Remover Latência de Tela Cheia"
-        $DescDx11.Text = "Ajusta o comportamento de tela cheia exclusiva (DX11) no registro para reduzir input lag apenas para o jogo selecionado."
+        $DescDx11.Text = "Ajusta o comportamento de tela cheia exclusiva (DX11 Flags 0x211) no registro para reduzir input lag apenas para o jogo selecionado."
         $HdrNvTel.Text = "Desativar Telemetria NVIDIA"
-        $DescNvTel.Text = "Pausa automaticamente os serviços de container/telemetria NVIDIA enquanto o jogo está aberto e restaura exatamente o estado original ao fechar."
+        $DescNvTel.Text = "Pausa automaticamente os serviços de container/telemetria NVIDIA enquanto o jogo está aberto e restaura exatamente o estado original ao fechar (isolado por jogo)."
 
         $HdrDeepCleanTitle.Text = "Limpeza Profunda do Sistema (Motor Nativo C# / DISM++)"
         $SubDeepCleanDesc.Text = "Selecione caches do sistema, componentes substituídos do WinSxS, logs e arquivos temporários. Todos os logs saem no terminal PowerShell."
@@ -1647,7 +1830,7 @@ function Set-AppLanguage ([string]$langCode) {
 
         $HdrAdvTabTitle.Text = "Avançado"
         $HdrWinUpdateCard.Text = "Windows Update"
-        $DescWinUpdateCard.Text = "Desativa os serviços de atualização (wuauserv, UsoSvc) e bloqueia reinicializações automáticas. Restaurar devolve o comportamento original do Windows."
+        $DescWinUpdateCard.Text = "Desativa os serviços de atualização (wuauserv, UsoSvc, WaaSMedicSvc) e bloqueia reinicializações automáticas. Restaurar devolve o estado original salvo do Windows."
         $BtnDisableWinUpdate.Content = "Desativar Windows Update"
         $BtnRestoreWinUpdate.Content = "Restaurar Windows Update"
         $HdrNetResetCard.Text = "Manutenção do Sistema e Pilha de Rede"
@@ -1660,11 +1843,11 @@ function Set-AppLanguage ([string]$langCode) {
         $BtnRunTweaks.Content = "Aplicar Otimizações"
         $BtnUndoTweaks.Content = "Reverter Selecionadas"
     } else {
-        $BtnLangEN.Background = "#7C3AED"; $BtnLangEN.BorderBrush = "#A78BFA"
-        $BtnLangPT.Background = "Transparent"; $BtnLangPT.BorderBrush = "Transparent"
+        $BtnLangEN.Background = "#7C3AED"; $BtnLangEN.Foreground = "#FFFFFF"; $BtnLangEN.BorderBrush = "#A78BFA"
+        $BtnLangPT.Background = "Transparent"; $BtnLangPT.ClearValue([System.Windows.Controls.Control]::ForegroundProperty); $BtnLangPT.BorderBrush = "Transparent"
 
         $BtnNavTweaks.Content = "Tweaks"; $BtnNavGaming.Content = "Gaming"; $BtnNavDeepClean.Content = "Deep Clean"; $BtnNavAdvanced.Content = "Advanced"
-        $LblSearchPlaceholder.Text = "Search tweaks or preferences..."
+        $LblSearchPlaceholder.Text = "Search tweaks, games or cleanup..."
         $LblRecTitle.Text = "Recommended Selections:"
         $BtnPresetStd.Content = "Standard"; $BtnPresetMin.Content = "Minimal"; $BtnPresetAdv.Content = "Advanced"
         $BtnPresetClr.Content = "Clear All"; $BtnSelectInstalled.Content = "Detect Active Optimizations"
@@ -1694,11 +1877,11 @@ function Set-AppLanguage ([string]$langCode) {
         $HdrDscp.Text = "Prioritize Game Route"
         $DescDscp.Text = "Prioritizes network traffic for the selected game using QoS DSCP 46 policy to reduce jitter and packet latency."
         $HdrAffinity.Text = "High Priority + Optimized Affinity"
-        $DescAffinity.Text = "Automatically applies High priority and unchecks Logical CPU 0 via bitwise mask when the game starts. For VALORANT, also closes RiotClientServices in the background."
+        $DescAffinity.Text = "Automatically applies High priority and unchecks Logical CPU 0 via bitwise mask when the game starts. For VALORANT, closes RiotClientServices once the game stabilizes."
         $HdrDx11.Text = "Remove Fullscreen Latency"
-        $DescDx11.Text = "Applies targeted DX11 fullscreen optimization flags exclusively for the selected game to lower display input lag."
+        $DescDx11.Text = "Applies targeted DX11 fullscreen optimization flags (0x211) exclusively for the selected game to lower display input lag."
         $HdrNvTel.Text = "Disable NVIDIA Telemetry"
-        $DescNvTel.Text = "Automatically pauses NVIDIA container/telemetry services while the game runs and restores their exact original state when you exit."
+        $DescNvTel.Text = "Automatically pauses NVIDIA container/telemetry services while the game runs and restores their exact original state when you exit (per-game isolated backup)."
 
         $HdrDeepCleanTitle.Text = "Deep System Cleanup (Native C# / DISM++ Engine)"
         $SubDeepCleanDesc.Text = "Select system caches, WinSxS superseded components, logs, and temporary files. All verbose logs output directly to the PowerShell terminal."
@@ -1710,7 +1893,7 @@ function Set-AppLanguage ([string]$langCode) {
 
         $HdrAdvTabTitle.Text = "Advanced"
         $HdrWinUpdateCard.Text = "Windows Update"
-        $DescWinUpdateCard.Text = "Disables Windows Update services (wuauserv, UsoSvc) and prevents forced automatic restarts. Restore returns services to original settings."
+        $DescWinUpdateCard.Text = "Disables Windows Update services (wuauserv, UsoSvc, WaaSMedicSvc) and prevents forced automatic restarts. Restore returns services to saved original settings."
         $BtnDisableWinUpdate.Content = "Disable Windows Update"
         $BtnRestoreWinUpdate.Content = "Restore Windows Update"
         $HdrNetResetCard.Text = "System Maintenance & Network Stack"
@@ -1727,58 +1910,162 @@ function Set-AppLanguage ([string]$langCode) {
     Refresh-CachedStatusLabels
 }
 
-$BtnLangEN.Add_Click({ Set-AppLanguage "EN" })
-$BtnLangPT.Add_Click({ Set-AppLanguage "PT" })
+$BtnLangEN.Add_Click({ Set-AppLanguage "EN" $true })
+$BtnLangPT.Add_Click({ Set-AppLanguage "PT" $true })
 
-# Navegação e Controles da Janela
+# ==============================================================================
+# TEMAS (DARK & LIGHT COMPLETOS), CONTROLES DA JANELA E BUSCA MULTI-ABA
+# ==============================================================================
+function Apply-AppTheme ([bool]$darkMode) {
+    $script:isDark = $darkMode
+    $bc = New-Object System.Windows.Media.BrushConverter
+    if ($darkMode) {
+        $window.Resources["BgMain"]          = $bc.ConvertFromString("#111017")
+        $window.Resources["BgPanel"]         = $bc.ConvertFromString("#171520")
+        $window.Resources["BgCard"]          = $bc.ConvertFromString("#111017")
+        $window.Resources["BgCardHover"]     = $bc.ConvertFromString("#211D30")
+        $window.Resources["BgCardSelected"]  = $bc.ConvertFromString("#282042")
+        $window.Resources["BgHeader"]        = $bc.ConvertFromString("#0C0B10")
+        $window.Resources["BgInput"]         = $bc.ConvertFromString("#221E30")
+        $window.Resources["BgBtn"]           = $bc.ConvertFromString("#221E30")
+        $window.Resources["BgBtnHover"]      = $bc.ConvertFromString("#2F2944")
+        $window.Resources["BorderSubtle"]    = $bc.ConvertFromString("#2E2942")
+        $window.Resources["BorderHighlight"] = $bc.ConvertFromString("#8B5CF6")
+        $window.Resources["TextMain"]        = $bc.ConvertFromString("#F3F4F6")
+        $window.Resources["TextDim"]         = $bc.ConvertFromString("#9CA3AF")
+        $window.Resources["PurpleHeader"]    = $bc.ConvertFromString("#A78BFA")
+        $BtnTheme.Content = "☀"
+    } else {
+        $window.Resources["BgMain"]          = $bc.ConvertFromString("#F4F2FA")
+        $window.Resources["BgPanel"]         = $bc.ConvertFromString("#FFFFFF")
+        $window.Resources["BgCard"]          = $bc.ConvertFromString("#F8F7FC")
+        $window.Resources["BgCardHover"]     = $bc.ConvertFromString("#EDE9FE")
+        $window.Resources["BgCardSelected"]  = $bc.ConvertFromString("#DDD6FE")
+        $window.Resources["BgHeader"]        = $bc.ConvertFromString("#EAE6F8")
+        $window.Resources["BgInput"]         = $bc.ConvertFromString("#FFFFFF")
+        $window.Resources["BgBtn"]           = $bc.ConvertFromString("#EDE9FE")
+        $window.Resources["BgBtnHover"]      = $bc.ConvertFromString("#DDD6FE")
+        $window.Resources["BorderSubtle"]    = $bc.ConvertFromString("#D4CCF0")
+        $window.Resources["BorderHighlight"] = $bc.ConvertFromString("#7C3AED")
+        $window.Resources["TextMain"]        = $bc.ConvertFromString("#1E1B4B")
+        $window.Resources["TextDim"]         = $bc.ConvertFromString("#5B5578")
+        $window.Resources["PurpleHeader"]    = $bc.ConvertFromString("#6D28D9")
+        $BtnTheme.Content = "🌙"
+    }
+    Switch-Tab $script:CurrentTab
+}
+
+$script:CurrentTab = "Tweaks"
 function Switch-Tab ([string]$tab) {
+    $script:CurrentTab = $tab
     $ViewTweaks.Visibility    = if ($tab -eq "Tweaks")    { "Visible" } else { "Collapsed" }
     $ViewGaming.Visibility    = if ($tab -eq "Gaming")    { "Visible" } else { "Collapsed" }
     $ViewDeepClean.Visibility = if ($tab -eq "DeepClean") { "Visible" } else { "Collapsed" }
     $ViewAdvanced.Visibility  = if ($tab -eq "Advanced")  { "Visible" } else { "Collapsed" }
 
-    $BtnNavTweaks.Background    = if ($tab -eq "Tweaks")    { "#7C3AED" } else { "#221E30" }
-    $BtnNavGaming.Background    = if ($tab -eq "Gaming")    { "#7C3AED" } else { "#221E30" }
-    $BtnNavDeepClean.Background = if ($tab -eq "DeepClean") { "#7C3AED" } else { "#221E30" }
-    $BtnNavAdvanced.Background  = if ($tab -eq "Advanced")  { "#7C3AED" } else { "#221E30" }
+    $inactiveBg = if ($script:isDark) { "#221E30" } else { "#EDE9FE" }
+    foreach ($pair in @(
+        @($BtnNavTweaks, "Tweaks"),
+        @($BtnNavGaming, "Gaming"),
+        @($BtnNavDeepClean, "DeepClean"),
+        @($BtnNavAdvanced, "Advanced")
+    )) {
+        $btn = $pair[0]; $name = $pair[1]
+        if ($tab -eq $name) {
+            $btn.Background = "#7C3AED"
+            $btn.Foreground = "#FFFFFF"
+        } else {
+            $btn.Background = $inactiveBg
+            $btn.ClearValue([System.Windows.Controls.Control]::ForegroundProperty)
+        }
+    }
 }
 $BtnNavTweaks.Add_Click({ Switch-Tab "Tweaks" })
 $BtnNavGaming.Add_Click({ Switch-Tab "Gaming" })
 $BtnNavDeepClean.Add_Click({ Switch-Tab "DeepClean" })
 $BtnNavAdvanced.Add_Click({ Switch-Tab "Advanced" })
 
-$TitleBar.Add_MouseLeftButtonDown({ $window.DragMove() })
-$BtnMin.Add_Click({ $window.WindowState = 'Minimized' })
-$BtnMax.Add_Click({
-    if ($window.WindowState -eq 'Maximized') { $window.WindowState = 'Normal' }
-    else { $window.WindowState = 'Maximized' }
-})
-$BtnClose.Add_Click({ $window.Close() })
-
-$script:isDark = $true
-$BtnTheme.Add_Click({
-    $script:isDark = -not $script:isDark
-    $bc = New-Object System.Windows.Media.BrushConverter
-    if ($script:isDark) {
-        $window.Resources["BgMain"] = $bc.ConvertFromString("#111017")
-        $window.Resources["BgPanel"] = $bc.ConvertFromString("#171520")
-        $window.Resources["BgHeader"] = $bc.ConvertFromString("#0C0B10")
-        $window.Resources["TextMain"] = $bc.ConvertFromString("#F3F4F6")
-        $BtnTheme.Content = "☀"
-    } else {
-        $window.Resources["BgMain"] = $bc.ConvertFromString("#F5F3FF")
-        $window.Resources["BgPanel"] = $bc.ConvertFromString("#FFFFFF")
-        $window.Resources["BgHeader"] = $bc.ConvertFromString("#EDE9FE")
-        $window.Resources["TextMain"] = $bc.ConvertFromString("#1E1B4B")
-        $BtnTheme.Content = "🌙"
+$TitleBar.Add_MouseLeftButtonDown({
+    param($sender, $e)
+    if ($e.ButtonState -eq [System.Windows.Input.MouseButtonState]::Pressed) {
+        try { $window.DragMove() } catch {}
     }
 })
 
+$BtnMin.Add_Click({ $window.WindowState = 'Minimized' })
+
+$script:IsCustomMaximized = $false
+$script:NormalBounds = @{ Left = 0; Top = 0; Width = 1360; Height = 860 }
+$BtnMax.Add_Click({
+    if (-not $script:IsCustomMaximized) {
+        $script:NormalBounds.Left   = $window.Left
+        $script:NormalBounds.Top    = $window.Top
+        $script:NormalBounds.Width  = $window.Width
+        $script:NormalBounds.Height = $window.Height
+
+        $wa = [System.Windows.SystemParameters]::WorkArea
+        $window.Left   = $wa.Left
+        $window.Top    = $wa.Top
+        $window.Width  = $wa.Width
+        $window.Height = $wa.Height
+        $RootBorder.CornerRadius = New-Object System.Windows.CornerRadius(0)
+        $script:IsCustomMaximized = $true
+    } else {
+        $window.Left   = $script:NormalBounds.Left
+        $window.Top    = $script:NormalBounds.Top
+        $window.Width  = $script:NormalBounds.Width
+        $window.Height = $script:NormalBounds.Height
+        $RootBorder.CornerRadius = New-Object System.Windows.CornerRadius(5)
+        $script:IsCustomMaximized = $false
+    }
+})
+$BtnClose.Add_Click({ $window.Close() })
+
+$BtnTheme.Add_Click({
+    Apply-AppTheme (-not $script:isDark)
+    Save-UserAppSettings
+})
+
 $TxtSearch.Add_TextChanged({
-    $q = $TxtSearch.Text.ToLower()
+    $q = $TxtSearch.Text.Trim().ToLower()
+    $hasQuery = -not [string]::IsNullOrWhiteSpace($q)
+
+    # 1. Filtrar Aba Tweaks
     foreach ($ctrl in ($PanelLeft.Children + $PanelRight.Children)) {
         if ($ctrl -is [System.Windows.Controls.CheckBox]) {
-            $ctrl.Visibility = if ([string]::IsNullOrWhiteSpace($q) -or $ctrl.Content.ToString().ToLower().Contains($q)) { 'Visible' } else { 'Collapsed' }
+            $txt = if ($null -ne $ctrl.Content) { $ctrl.Content.ToString().ToLower() } else { "" }
+            $ctrl.Visibility = if (-not $hasQuery -or $txt.Contains($q)) { 'Visible' } else { 'Collapsed' }
+        }
+    }
+
+    # 2. Filtrar Aba Deep Clean
+    foreach ($it in $script:CleanItems) {
+        $txt = if ($null -ne $it.Chk.Content) { $it.Chk.Content.ToString().ToLower() } else { "" }
+        $rowGrid = $it.Chk.Parent
+        if ($rowGrid -is [System.Windows.Controls.Grid]) {
+            $rowGrid.Visibility = if (-not $hasQuery -or $txt.Contains($q)) { 'Visible' } else { 'Collapsed' }
+        }
+    }
+
+    # 3. Filtrar Aba Gaming (Cards e Seleção de Jogo)
+    $gameCards = @(
+        @($CardGameDscp, $HdrDscp, $DescDscp),
+        @($CardGameAffinity, $HdrAffinity, $DescAffinity),
+        @($CardGameDx11, $HdrDx11, $DescDx11),
+        @($CardGameNvTel, $HdrNvTel, $DescNvTel)
+    )
+    foreach ($gc in $gameCards) {
+        $card = $gc[0]; $hdr = $gc[1]; $desc = $gc[2]
+        $combined = ("$($hdr.Text) $($desc.Text)").ToLower()
+        $card.Visibility = if (-not $hasQuery -or $combined.Contains($q)) { 'Visible' } else { 'Collapsed' }
+    }
+    if ($hasQuery) {
+        for ($i = 0; $i -lt $script:GameList.Count; $i++) {
+            $g = $script:GameList[$i]
+            if ($g.Name.ToLower().Contains($q) -or $g.Exe.ToLower().Contains($q)) {
+                if ($LstGames.SelectedIndex -ne $i) { $LstGames.SelectedIndex = $i }
+                break
+            }
         }
     }
 })
@@ -1807,7 +2094,7 @@ $BtnCreateRestore.Add_Click({
 })
 
 # ==============================================================================
-# MOTOR ASSÍNCRONO DA ABA "LIMPEZA PROFUNDA" (ZERO FREEZE + C# FASTCLEANER)
+# MOTOR ASSÍNCRONO DA ABA "LIMPEZA PROFUNDA"
 # ==============================================================================
 $script:CleanScannedBytes = @{}
 $userLocalAppData = Join-Path $script:UserCtx.UserProfile "AppData\Local"
@@ -1817,7 +2104,7 @@ $userTempPath = Join-Path $userLocalAppData "Temp"
 $script:CleanItems = @(
     @{ Id="WinSxSSuperseded"; Chk=$ClnWinSxSSuperseded; Sz=$SzWinSxSSuperseded; Cat="Expired"; Default=$true; Mode="DISM"; Paths=@() },
     @{ Id="DismResidual";     Chk=$ClnDismResidual;     Sz=$SzDismResidual;     Cat="Expired"; Default=$true; Mode="PATH"; Paths=@("$env:windir\Logs\DISM\*.bak", "$env:windir\Temp\DISM*") },
-    @{ Id="ChromeOldBackup";  Chk=$ClnChromeOldBackup;  Sz=$SzChromeOldBackup;  Cat="Expired"; Default=$true; Mode="PATH"; Paths=@("$userLocalAppData\Google\Chrome\User Data\*\old_*", "$userLocalAppData\Google\Chrome\Temp\*", "${env:ProgramFiles}\Google\Chrome\Application\*\Installer\chrome.7z") },
+    @{ Id="ChromeOldBackup";  Chk=$ClnChromeOldBackup;  Sz=$SzChromeOldBackup;  Cat="Expired"; Default=$true; Mode="PATH"; Paths=@("$userLocalAppData\Google\Chrome\User Data\*\old_*", "$userLocalAppData\Google\Chrome\Temp\*", "${env:ProgramFiles}\Google\Chrome\Application\old_*") },
 
     @{ Id="WerReports";       Chk=$ClnWerReports;       Sz=$SzWerReports;       Cat="System";  Default=$true; Mode="PATH"; Paths=@("$env:ProgramData\Microsoft\Windows\WER\ReportArchive\*", "$env:ProgramData\Microsoft\Windows\WER\ReportQueue\*", "$userLocalAppData\Microsoft\Windows\WER\ReportArchive\*", "$userLocalAppData\Microsoft\Windows\WER\ReportQueue\*") },
     @{ Id="WinEvents";        Chk=$ClnWinEvents;        Sz=$SzWinEvents;        Cat="System";  Default=$true; Mode="EVTX"; Paths=@("$env:windir\System32\winevt\Logs\*.evtx") },
@@ -1840,7 +2127,7 @@ $script:CleanItems = @(
     @{ Id="WinSxSTemp";       Chk=$ClnWinSxSTemp;       Sz=$SzWinSxSTemp;       Cat="Temp";    Default=$true; Mode="PATH"; Paths=@("$env:windir\WinSxS\Temp\*") },
     @{ Id="WindowsLogs";      Chk=$ClnWindowsLogs;      Sz=$SzWindowsLogs;      Cat="Temp";    Default=$true; Mode="PATH"; Paths=@("$env:windir\Logs\CBS\*.log", "$env:windir\Logs\DISM\*.log", "$env:windir\Panther\*.log", "$env:windir\*.log") },
     @{ Id="TempFiles";        Chk=$ClnTempFiles;        Sz=$SzTempFiles;        Cat="Temp";    Default=$true; Mode="PATH"; Paths=@("$userTempPath\*", "$env:windir\Temp\*") },
-    @{ Id="RecycleBin";       Chk=$ClnRecycleBin;       Sz=$SzRecycleBin;       Cat="Temp";    Default=$true; Mode="BIN";  Paths=@("$env:SystemDrive\`$Recycle.Bin\*") },
+    @{ Id="RecycleBin";       Chk=$ClnRecycleBin;       Sz=$SzRecycleBin;       Cat="Temp";    Default=$true; Mode="BIN";  Paths=@() },
     @{ Id="CrashDumps";       Chk=$ClnCrashDumps;       Sz=$SzCrashDumps;       Cat="Temp";    Default=$true; Mode="PATH"; Paths=@("$env:windir\Minidump\*", "$env:windir\MEMORY.DMP", "$userLocalAppData\CrashDumps\*") },
     @{ Id="MaJunkFiles";      Chk=$ClnMaJunkFiles;      Sz=$SzMaJunkFiles;      Cat="Temp";    Default=$true; Mode="PATH"; Paths=@("$env:windir\SoftwareDistribution\PostRebootEventCache.V2\*", "$env:SystemDrive\`$Windows.~BT\*", "$env:SystemDrive\`$Windows.~WS\*") },
     @{ Id="IdmTempFiles";     Chk=$ClnIdmTempFiles;     Sz=$SzIdmTempFiles;     Cat="Temp";    Default=$false;Mode="PATH"; Paths=@("$userRoamingAppData\IDM\DwnlData\*") }
@@ -1946,7 +2233,6 @@ $BtnCleanNone.Add_Click({
     Update-CleanSizeLabels
 })
 
-# Executor Assíncrono (Runspace + DispatcherTimer sem GetNewClosure)
 $script:CleanJobRunning = $false
 function Start-AsyncDeepCleanJob ([string]$JobType, [array]$WorkList) {
     if ($script:CleanJobRunning) { return }
@@ -1954,9 +2240,7 @@ function Start-AsyncDeepCleanJob ([string]$JobType, [array]$WorkList) {
     $BtnCleanScan.IsEnabled = $false
     $BtnCleanExecute.IsEnabled = $false
 
-    if ($null -eq $script:CleanScannedBytes) {
-        $script:CleanScannedBytes = @{}
-    }
+    if ($null -eq $script:CleanScannedBytes) { $script:CleanScannedBytes = @{} }
 
     $sync = [hashtable]::Synchronized(@{
         Done       = $false
@@ -1971,104 +2255,166 @@ function Start-AsyncDeepCleanJob ([string]$JobType, [array]$WorkList) {
     $ps = [PowerShell]::Create()
     [void]$ps.AddScript({
         param($JobType, $WorkList, $Sync, $DllPath)
-        if (-not ([System.Management.Automation.PSTypeName]'BetterTitus.FastCleaner').Type) {
-            Add-Type -Path $DllPath -ErrorAction Stop
-        }
-        function Enqueue-Log ([string]$m, [string]$l = "INFO") {
-            $Sync.Logs.Enqueue(@{ Msg = $m; Lvl = $l })
-        }
-        function Fmt-Size ([int64]$b) {
-            if ($b -ge 1GB) { return ("{0:N2} GB" -f ($b / 1GB)) }
-            if ($b -ge 1MB) { return ("{0:N2} MB" -f ($b / 1MB)) }
-            if ($b -ge 1KB) { return ("{0:N1} KB" -f ($b / 1KB)) }
-            return "0.0 MB"
-        }
-
-        $idx = 0
-        foreach ($item in $WorkList) {
-            $idx++
-            $Sync.CurrentIdx = $idx
-            if ($JobType -eq "SCAN") {
-                if ($item.Mode -eq "DISM") {
-                    $Sync.Results[$item.Id] = -2
-                } elseif ($item.Mode -eq "VSS") {
-                    $Sync.Results[$item.Id] = -3
-                } else {
-                    [int64]$sz = [BetterTitus.FastCleaner]::GetPatternSize($item.Paths)
-                    $Sync.Results[$item.Id] = $sz
-                    $Sync.ScanBytes += $sz
-                    if ($sz -gt 0) {
-                        Enqueue-Log "$($item.Label) -> $(Fmt-Size $sz)" "INFO"
-                    }
+        try {
+            if (-not ([System.Management.Automation.PSTypeName]'BetterTitus.FastCleaner').Type) {
+                if (Test-Path $DllPath) { Add-Type -Path $DllPath -ErrorAction Stop }
+            }
+            function Enqueue-Log ([string]$m, [string]$l = "INFO") {
+                $Sync.Logs.Enqueue(@{ Msg = $m; Lvl = $l })
+            }
+            function Fmt-Size ([int64]$b) {
+                if ($b -ge 1GB) { return ("{0:N2} GB" -f ($b / 1GB)) }
+                if ($b -ge 1MB) { return ("{0:N2} MB" -f ($b / 1MB)) }
+                if ($b -ge 1KB) { return ("{0:N1} KB" -f ($b / 1KB)) }
+                return "0.0 MB"
+            }
+            function Get-RecycleBinPatterns {
+                $pats = @()
+                $drives = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" -ErrorAction SilentlyContinue
+                foreach ($d in $drives) {
+                    $pats += "$($d.DeviceID)\`$Recycle.Bin\*"
                 }
-            } elseif ($JobType -eq "CLEAN") {
+                if ($pats.Count -eq 0) { $pats += "$env:SystemDrive\`$Recycle.Bin\*" }
+                return $pats
+            }
+            function Get-SystemFreeBytes {
                 try {
-                    [int64]$before = if ($item.Paths.Count -gt 0) { [BetterTitus.FastCleaner]::GetPatternSize($item.Paths) } else { 0 }
-                    switch ($item.Mode) {
-                        "DISM" {
-                            Enqueue-Log "Executando DISM /StartComponentCleanup (aguarde)..." "INFO"
-                            & dism.exe /Online /Cleanup-Image /StartComponentCleanup /Quiet | Out-Null
-                        }
-                        "EVTX" {
-                            foreach ($log in @("Application", "System", "Setup", "Windows PowerShell")) {
-                                & wevtutil.exe cl "$log" 2>$null
-                            }
-                        }
-                        "VSS" {
-                            & vssadmin.exe delete shadows /for=$env:SystemDrive /all /quiet 2>$null | Out-Null
-                        }
-                        "WUHIST" {
-                            $wuSvc = Get-Service "wuauserv" -ErrorAction SilentlyContinue
-                            $wuWasRunning = ($null -ne $wuSvc -and $wuSvc.Status -eq 'Running')
-                            if ($wuWasRunning) { Stop-Service -Name "wuauserv" -ErrorAction SilentlyContinue }
-                            [BetterTitus.FastCleaner]::CleanPattern($item.Paths)
-                            if ($wuWasRunning) { Start-Service -Name "wuauserv" -ErrorAction SilentlyContinue }
-                        }
-                        "WUDL" {
-                            $wuSvc = Get-Service "wuauserv" -ErrorAction SilentlyContinue
-                            $bitsSvc = Get-Service "bits" -ErrorAction SilentlyContinue
-                            $wuWasRunning = ($null -ne $wuSvc -and $wuSvc.Status -eq 'Running')
-                            $bitsWasRunning = ($null -ne $bitsSvc -and $bitsSvc.Status -eq 'Running')
-                            if ($wuWasRunning) { Stop-Service -Name "wuauserv" -ErrorAction SilentlyContinue }
-                            if ($bitsWasRunning) { Stop-Service -Name "bits" -ErrorAction SilentlyContinue }
-                            [BetterTitus.FastCleaner]::CleanPattern($item.Paths)
-                            if ($bitsWasRunning) { Start-Service -Name "bits" -ErrorAction SilentlyContinue }
-                            if ($wuWasRunning) { Start-Service -Name "wuauserv" -ErrorAction SilentlyContinue }
-                        }
-                        "DO" {
-                            if (Get-Command Delete-DeliveryOptimizationCache -ErrorAction SilentlyContinue) {
-                                Delete-DeliveryOptimizationCache -Force -ErrorAction SilentlyContinue
-                            }
-                            [BetterTitus.FastCleaner]::CleanPattern($item.Paths)
-                        }
-                        "THUMB" {
-                            Stop-Process -Name "explorer" -Force -ErrorAction SilentlyContinue
-                            Start-Sleep -Milliseconds 600
-                            [BetterTitus.FastCleaner]::CleanPattern($item.Paths)
-                            Start-Process "explorer.exe"
-                        }
-                        "BIN" {
-                            $drives = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" -ErrorAction SilentlyContinue
-                            foreach ($d in $drives) {
-                                $letter = $d.DeviceID.TrimEnd(':')
-                                Clear-RecycleBin -DriveLetter $letter -Force -ErrorAction SilentlyContinue
-                            }
-                        }
-                        default {
-                            [BetterTitus.FastCleaner]::CleanPattern($item.Paths)
-                        }
+                    return [int64](Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='$env:SystemDrive'" -ErrorAction SilentlyContinue).FreeSpace
+                } catch { return [int64]0 }
+            }
+
+            $idx = 0
+            foreach ($item in $WorkList) {
+                $idx++
+                $Sync.CurrentIdx = $idx
+                if ($JobType -eq "SCAN") {
+                    if ($item.Mode -eq "DISM") {
+                        $Sync.Results[$item.Id] = -2
+                    } elseif ($item.Mode -eq "VSS") {
+                        $Sync.Results[$item.Id] = -3
+                    } elseif ($item.Mode -eq "BIN") {
+                        $binPats = Get-RecycleBinPatterns
+                        [int64]$sz = [BetterTitus.FastCleaner]::GetPatternSize($binPats)
+                        $Sync.Results[$item.Id] = $sz
+                        $Sync.ScanBytes += $sz
+                        if ($sz -gt 0) { Enqueue-Log "$($item.Label) -> $(Fmt-Size $sz)" "INFO" }
+                    } else {
+                        [int64]$sz = [BetterTitus.FastCleaner]::GetPatternSize($item.Paths)
+                        $Sync.Results[$item.Id] = $sz
+                        $Sync.ScanBytes += $sz
+                        if ($sz -gt 0) { Enqueue-Log "$($item.Label) -> $(Fmt-Size $sz)" "INFO" }
                     }
-                    [int64]$after = if ($item.Paths.Count -gt 0) { [BetterTitus.FastCleaner]::GetPatternSize($item.Paths) } else { 0 }
-                    [int64]$freed = [math]::Max(0, ($before - $after))
-                    $Sync.FreedBytes += $freed
-                    $Sync.Results[$item.Id] = if ($item.Mode -eq "DISM") { -2 } elseif ($item.Mode -eq "VSS") { -3 } else { $after }
-                    Enqueue-Log "$($item.Label) -> Limpo ($(Fmt-Size $freed) efetivamente liberados)" "OK"
-                } catch {
-                    Enqueue-Log "$($item.Label) -> Erro: $($_.Exception.Message)" "ERROR"
+                } elseif ($JobType -eq "CLEAN") {
+                    try {
+                        [int64]$freed = 0
+                        switch ($item.Mode) {
+                            "DISM" {
+                                $freeBefore = Get-SystemFreeBytes
+                                Enqueue-Log "Executando DISM /StartComponentCleanup (aguarde)..." "INFO"
+                                & dism.exe /Online /Cleanup-Image /StartComponentCleanup /Quiet | Out-Null
+                                $freeAfter = Get-SystemFreeBytes
+                                $freed = [math]::Max(0, ($freeAfter - $freeBefore))
+                                $Sync.Results[$item.Id] = -2
+                            }
+                            "VSS" {
+                                $freeBefore = Get-SystemFreeBytes
+                                & vssadmin.exe delete shadows /for=$env:SystemDrive /all /quiet 2>$null | Out-Null
+                                $freeAfter = Get-SystemFreeBytes
+                                $freed = [math]::Max(0, ($freeAfter - $freeBefore))
+                                $Sync.Results[$item.Id] = -3
+                            }
+                            "EVTX" {
+                                [int64]$before = [BetterTitus.FastCleaner]::GetPatternSize($item.Paths)
+                                foreach ($log in @("Application", "System", "Setup", "Windows PowerShell")) {
+                                    & wevtutil.exe cl "$log" 2>$null
+                                }
+                                [int64]$after = [BetterTitus.FastCleaner]::GetPatternSize($item.Paths)
+                                $freed = [math]::Max(0, ($before - $after))
+                                $Sync.Results[$item.Id] = $after
+                            }
+                            "WUHIST" {
+                                $wuSvc = Get-Service "wuauserv" -ErrorAction SilentlyContinue
+                                $wuWasRunning = ($null -ne $wuSvc -and $wuSvc.Status -eq 'Running')
+                                if ($wuWasRunning) { Stop-Service -Name "wuauserv" -ErrorAction SilentlyContinue }
+                                [int64]$before = [BetterTitus.FastCleaner]::GetPatternSize($item.Paths)
+                                [BetterTitus.FastCleaner]::CleanPattern($item.Paths)
+                                [int64]$after = [BetterTitus.FastCleaner]::GetPatternSize($item.Paths)
+                                if ($wuWasRunning) { Start-Service -Name "wuauserv" -ErrorAction SilentlyContinue }
+                                $freed = [math]::Max(0, ($before - $after))
+                                $Sync.Results[$item.Id] = $after
+                            }
+                            "WUDL" {
+                                $wuSvc = Get-Service "wuauserv" -ErrorAction SilentlyContinue
+                                $bitsSvc = Get-Service "bits" -ErrorAction SilentlyContinue
+                                $wuWasRunning = ($null -ne $wuSvc -and $wuSvc.Status -eq 'Running')
+                                $bitsWasRunning = ($null -ne $bitsSvc -and $bitsSvc.Status -eq 'Running')
+                                if ($wuWasRunning) { Stop-Service -Name "wuauserv" -ErrorAction SilentlyContinue }
+                                if ($bitsWasRunning) { Stop-Service -Name "bits" -ErrorAction SilentlyContinue }
+                                [int64]$before = [BetterTitus.FastCleaner]::GetPatternSize($item.Paths)
+                                [BetterTitus.FastCleaner]::CleanPattern($item.Paths)
+                                [int64]$after = [BetterTitus.FastCleaner]::GetPatternSize($item.Paths)
+                                if ($bitsWasRunning) { Start-Service -Name "bits" -ErrorAction SilentlyContinue }
+                                if ($wuWasRunning) { Start-Service -Name "wuauserv" -ErrorAction SilentlyContinue }
+                                $freed = [math]::Max(0, ($before - $after))
+                                $Sync.Results[$item.Id] = $after
+                            }
+                            "DO" {
+                                [int64]$before = [BetterTitus.FastCleaner]::GetPatternSize($item.Paths)
+                                if (Get-Command Delete-DeliveryOptimizationCache -ErrorAction SilentlyContinue) {
+                                    Delete-DeliveryOptimizationCache -Force -ErrorAction SilentlyContinue
+                                }
+                                [BetterTitus.FastCleaner]::CleanPattern($item.Paths)
+                                [int64]$after = [BetterTitus.FastCleaner]::GetPatternSize($item.Paths)
+                                $freed = [math]::Max(0, ($before - $after))
+                                $Sync.Results[$item.Id] = $after
+                            }
+                            "THUMB" {
+                                [int64]$before = [BetterTitus.FastCleaner]::GetPatternSize($item.Paths)
+                                $expProcs = Get-Process -Name "explorer" -ErrorAction SilentlyContinue
+                                if ($expProcs) {
+                                    $expProcs | Stop-Process -Force -ErrorAction SilentlyContinue
+                                    Start-Sleep -Milliseconds 800
+                                }
+                                [BetterTitus.FastCleaner]::CleanPattern($item.Paths)
+                                [int64]$after = [BetterTitus.FastCleaner]::GetPatternSize($item.Paths)
+                                if (-not (Get-Process -Name "explorer" -ErrorAction SilentlyContinue)) {
+                                    Start-Process "explorer.exe"
+                                }
+                                $freed = [math]::Max(0, ($before - $after))
+                                $Sync.Results[$item.Id] = $after
+                            }
+                            "BIN" {
+                                $binPats = Get-RecycleBinPatterns
+                                [int64]$before = [BetterTitus.FastCleaner]::GetPatternSize($binPats)
+                                $drives = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" -ErrorAction SilentlyContinue
+                                foreach ($d in $drives) {
+                                    $letter = $d.DeviceID.TrimEnd(':')
+                                    Clear-RecycleBin -DriveLetter $letter -Force -ErrorAction SilentlyContinue
+                                }
+                                [int64]$after = [BetterTitus.FastCleaner]::GetPatternSize($binPats)
+                                $freed = [math]::Max(0, ($before - $after))
+                                $Sync.Results[$item.Id] = $after
+                            }
+                            default {
+                                [int64]$before = [BetterTitus.FastCleaner]::GetPatternSize($item.Paths)
+                                [BetterTitus.FastCleaner]::CleanPattern($item.Paths)
+                                [int64]$after = [BetterTitus.FastCleaner]::GetPatternSize($item.Paths)
+                                $freed = [math]::Max(0, ($before - $after))
+                                $Sync.Results[$item.Id] = $after
+                            }
+                        }
+                        $Sync.FreedBytes += $freed
+                        Enqueue-Log "$($item.Label) -> Limpo ($(Fmt-Size $freed) efetivamente liberados)" "OK"
+                    } catch {
+                        Enqueue-Log "$($item.Label) -> Erro: $($_.Exception.Message)" "ERROR"
+                    }
                 }
             }
+        } catch {
+            $Sync.Logs.Enqueue(@{ Msg = "Erro fatal no worker de limpeza: $($_.Exception.Message)"; Lvl = "ERROR" })
+        } finally {
+            $Sync.Done = $true
         }
-        $Sync.Done = $true
     }).AddArgument($JobType).AddArgument($WorkList).AddArgument($sync).AddArgument($script:CleanerDll)
 
     $asyncHandle = $ps.BeginInvoke()
@@ -2102,7 +2448,7 @@ function Start-AsyncDeepCleanJob ([string]$JobType, [array]$WorkList) {
             $LblCleanTotalSize.Text = if ($ctx.JobType -eq "SCAN") { "Scanning... ($($sync.CurrentIdx)/$($sync.TotalCount))" } else { "Cleaning... ($($sync.CurrentIdx)/$($sync.TotalCount))" }
         }
 
-        if ($sync.Done) {
+        if ($sync.Done -or $ctx.AsyncHandle.IsCompleted) {
             $sender.Stop()
             try { $ctx.PS.EndInvoke($ctx.AsyncHandle) } catch {}
             $ctx.PS.Dispose()
@@ -2178,7 +2524,7 @@ $BtnCleanExecute.Add_Click({
 })
 
 # ==============================================================================
-# LISTA DE JOGOS LIMPA
+# LISTA DE JOGOS E WORKERS ISOLADOS
 # ==============================================================================
 $script:DefaultGames = @(
     [PSCustomObject]@{ Name = "VALORANT";         Exe = "VALORANT-Win64-Shipping.exe";       FullPath = ""; Custom = $false; Badge = "" },
@@ -2233,8 +2579,6 @@ $BtnBrowseExe.Add_Click({
     }
 })
 
-function Get-CleanId ([string]$exeName) { return ($exeName -replace '[^a-zA-Z0-9]', '_') }
-
 $BtnAddGame.Add_Click({
     $gName = $TxtCustomGameName.Text.Trim()
     $gExe  = $TxtCustomGameExe.Text.Trim()
@@ -2243,7 +2587,7 @@ $BtnAddGame.Add_Click({
         return
     }
     $gExe = [System.IO.Path]::GetFileName($gExe)
-    if ($gExe -notmatch '^[a-zA-Z0-9_\-\.\s]+\.exe$') {
+    if ($gExe -notmatch '^[a-zA-Z0-9_\-\.\x27\s]+\.exe$') {
         Write-BTLog "Nome de executável inválido: $gExe" "ERROR"
         return
     }
@@ -2267,39 +2611,46 @@ $BtnAddGame.Add_Click({
 
 $BtnRemoveGame.Add_Click({
     $idx = $LstGames.SelectedIndex
-    if ($idx -ge 0) {
-        $sel = $script:GameList[$idx]
-        if (-not $sel.Custom) {
-            Write-BTLog "Jogos pré-configurados não podem ser removidos." "WARN"
-            return
-        }
-        $id = Get-CleanId $sel.Exe
-        @("BetterTitus_Affinity_$id", "BetterTitus_DX11Watch_$id", "BetterTitus_NvTel_$id") | ForEach-Object {
-            Stop-ScheduledTask -TaskName $_ -ErrorAction SilentlyContinue
-            Unregister-ScheduledTask -TaskName $_ -Confirm:$false -ErrorAction SilentlyContinue
-        }
-        Remove-Item "$script:ConfigDir\Affinity_$id.ps1", "$script:ConfigDir\DX11Watch_$id.ps1", "$script:ConfigDir\NvTel_$id.ps1" -Force -ErrorAction SilentlyContinue
-        Remove-Item "HKLM:\SOFTWARE\Policies\Microsoft\Windows\QoS\BetterTitus_$id" -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\$($sel.Exe)\PerfOptions" -Recurse -Force -ErrorAction SilentlyContinue
-
-        $script:GameList.RemoveAt($idx)
-        Save-CustomGames
-        if ($script:GameList.Count -gt 0) { $LstGames.SelectedIndex = 0 }
-        Write-BTLog "Jogo removido junto com suas tarefas: $($sel.Name)." "OK"
+    if ($idx -lt 0 -or $idx -ge $script:GameList.Count) {
+        Write-BTLog "Nenhum jogo selecionado para remover." "WARN"
+        return
     }
+    $sel = $script:GameList[$idx]
+    if (-not $sel.Custom) {
+        Write-BTLog "Jogos pré-configurados não podem ser removidos." "WARN"
+        return
+    }
+    $id = Get-CleanId $sel.Exe
+    @("BetterTitus_Affinity_$id", "BetterTitus_DX11Watch_$id", "BetterTitus_NvTel_$id") | ForEach-Object {
+        Stop-ScheduledTask -TaskName $_ -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskName $_ -Confirm:$false -ErrorAction SilentlyContinue
+    }
+    Remove-Item "$script:ConfigDir\Affinity_$id.ps1", "$script:ConfigDir\DX11Watch_$id.ps1", "$script:ConfigDir\NvTel_$id.ps1" -Force -ErrorAction SilentlyContinue
+    Restore-NvidiaBackupForGame $id
+    Remove-Item "HKLM:\SOFTWARE\Policies\Microsoft\Windows\QoS\BetterTitus_$id" -Recurse -Force -ErrorAction SilentlyContinue
+
+    $script:GameList.RemoveAt($idx)
+    Save-CustomGames
+    if ($script:GameList.Count -gt 0) { $LstGames.SelectedIndex = 0 }
+    Write-BTLog "Jogo removido junto com suas tarefas: $($sel.Name)." "OK"
 })
 
 # ==============================================================================
-# OTIMIZAÇÕES DE GAMING (DSCP 46, AFINIDADE BITWISE CPU 0, DX11 211, NVIDIA)
+# OTIMIZAÇÕES DE GAMING (DSCP 46, AFINIDADE BITWISE, DX11 0x211, NVIDIA ISOLADO)
 # ==============================================================================
 $script:loadingGameUI = $false
 
-function Update-SelectedGameUI {
+function Get-SelectedGameSafe {
     $idx = $LstGames.SelectedIndex
-    if ($idx -lt 0 -or $idx -ge $script:GameList.Count) { return }
+    if ($idx -lt 0 -or $idx -ge $script:GameList.Count) { return $null }
+    return $script:GameList[$idx]
+}
+
+function Update-SelectedGameUI {
+    $game = Get-SelectedGameSafe
+    if ($null -eq $game) { return }
     $script:loadingGameUI = $true
 
-    $game = $script:GameList[$idx]
     $exe  = $game.Exe
     $id   = Get-CleanId $exe
     $script:GameStateCache.Exe = $exe
@@ -2331,7 +2682,7 @@ function Update-SelectedGameUI {
         }
     }
     $hasDxTask = Test-ScheduledTaskSafe "\" "BetterTitus_DX11Watch_$id"
-    if ($dxFlagsVal -eq 0x211 -or $dxFlagsVal -eq 529 -or $dxFlagsVal -eq 211) {
+    if ($dxFlagsVal -eq 0x211 -or $dxFlagsVal -eq 529) {
         $script:GameStateCache.Dx11State = "APPLIED"; $TglGameDx11.IsChecked = $true; $StatusDx11.Foreground = "#4ADE80"
     } elseif ($hasDxTask) {
         $script:GameStateCache.Dx11State = "WATCHING"; $TglGameDx11.IsChecked = $true; $StatusDx11.Foreground = "#A78BFA"
@@ -2353,7 +2704,7 @@ $LstGames.Add_SelectionChanged({ Update-SelectedGameUI })
 
 $TglGameDscp.Add_Checked({
     if ($script:loadingGameUI) { return }
-    $game = $script:GameList[$LstGames.SelectedIndex]
+    $game = Get-SelectedGameSafe; if ($null -eq $game) { return }
     $exe = $game.Exe; $id = Get-CleanId $exe
     $qosPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\QoS\BetterTitus_$id"
     Invoke-SafeTweak "Priorizar Rota de Jogo ($exe)" {
@@ -2369,7 +2720,8 @@ $TglGameDscp.Add_Checked({
 })
 $TglGameDscp.Add_Unchecked({
     if ($script:loadingGameUI) { return }
-    $game = $script:GameList[$LstGames.SelectedIndex]; $id = Get-CleanId $game.Exe
+    $game = Get-SelectedGameSafe; if ($null -eq $game) { return }
+    $id = Get-CleanId $game.Exe
     Invoke-SafeTweak "Remover Prioridade de Rota ($($game.Exe))" {
         Remove-Item "HKLM:\SOFTWARE\Policies\Microsoft\Windows\QoS\BetterTitus_$id" -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -2383,22 +2735,32 @@ $TglGameAffinity.Add_Checked({
         $script:loadingGameUI = $true; $TglGameAffinity.IsChecked = $false; $script:loadingGameUI = $false
         return
     }
-    $game = $script:GameList[$LstGames.SelectedIndex]
+    $game = Get-SelectedGameSafe; if ($null -eq $game) { return }
     $exe = $game.Exe; $procName = [System.IO.Path]::GetFileNameWithoutExtension($exe)
     $id = Get-CleanId $exe; $taskName = "BetterTitus_Affinity_$id"
-    $ifeoPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\$exe\PerfOptions"
     $isVal = if ($exe -ieq "VALORANT-Win64-Shipping.exe") { '$true' } else { '$false' }
 
+    # Escape seguro para nomes contendo apóstrofos (ex: game's.exe)
+    $psSafeExe  = $exe.Replace("'", "''")
+    $psSafeProc = $procName.Replace("'", "''")
+    $wmiSafeExe = $exe.Replace("\", "\\").Replace("'", "\'")
+
     Invoke-SafeTweak "Prioridade Alta + Afinidade Bitwise ($exe)" {
-        Set-Reg $ifeoPath "CpuPriorityClass" 3 "DWord"; Set-Reg $ifeoPath "IoPriority" 3 "DWord"
         Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+        # Limpar eventuais chaves antigas IFEO PerfOptions obsoletas
+        Remove-Item "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\$exe\PerfOptions" -Recurse -Force -ErrorAction SilentlyContinue
 
         $scriptPath = "$script:ConfigDir\Affinity_$id.ps1"
         $workerCode = @"
-`$exeName = '$exe'; `$procBase = '$procName'; `$isValorant = $isVal
+`$exeName = '$psSafeExe'
+`$procBase = '$psSafeProc'
+`$isValorant = $isVal
+`$logFile = '$script:ConfigDir\worker_affinity_$id.log'
+
 function Optimize-RunningTarget {
     `$foundGame = `$false
-    for (`$i = 0; `$i -lt 8; `$i++) {
+    `$windowReady = `$false
+    for (`$i = 0; `$i -lt 10; `$i++) {
         `$procs = @(Get-Process -Name `$procBase -ErrorAction SilentlyContinue)
         if (`$procs.Count -gt 0) {
             `$foundGame = `$true
@@ -2406,23 +2768,39 @@ function Optimize-RunningTarget {
                 try {
                     `$curMask = `$p.ProcessorAffinity.ToInt64()
                     `$newMask = `$curMask -band (-bnot 1L)
-                    if (`$newMask -gt 0) { `$p.ProcessorAffinity = [IntPtr]`$newMask }
-                    `$p.PriorityClass = 'High'
+                    if (`$newMask -gt 0 -and `$curMask -ne `$newMask) { `$p.ProcessorAffinity = [IntPtr]`$newMask }
+                    if (`$p.PriorityClass -ne 'High') { `$p.PriorityClass = 'High' }
+                    if (`$p.MainWindowHandle -ne [IntPtr]::Zero) { `$windowReady = `$true }
                 } catch {}
             }
         }
-        Start-Sleep -Seconds 2
+        if (`$windowReady) { break }
+        Start-Sleep -Milliseconds 1500
     }
-    if (`$isValorant -and `$foundGame) {
+    if (`$isValorant -and `$foundGame -and `$windowReady) {
         Get-Process -Name 'RiotClientServices' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     }
 }
+
 Optimize-RunningTarget
 Unregister-Event -SourceIdentifier 'BT_ProcWatch_$id' -ErrorAction SilentlyContinue
-Register-WmiEvent -Query "SELECT * FROM __InstanceCreationEvent WITHIN 2 WHERE TargetInstance ISA 'Win32_Process' AND TargetInstance.Name = '`$exeName'" -SourceIdentifier 'BT_ProcWatch_$id' -ErrorAction SilentlyContinue
+Register-WmiEvent -Query "SELECT * FROM __InstanceCreationEvent WITHIN 2 WHERE TargetInstance ISA 'Win32_Process' AND TargetInstance.Name = '$wmiSafeExe'" -SourceIdentifier 'BT_ProcWatch_$id' -ErrorAction SilentlyContinue
+
 while (`$true) {
-    `$evt = Wait-Event -SourceIdentifier 'BT_ProcWatch_$id'
-    if (`$evt) { Remove-Event -EventIdentifier `$evt.EventIdentifier -ErrorAction SilentlyContinue; Optimize-RunningTarget }
+    try {
+        `$evt = Wait-Event -SourceIdentifier 'BT_ProcWatch_$id' -Timeout 60
+        if (`$evt) {
+            Remove-Event -EventIdentifier `$evt.EventIdentifier -ErrorAction SilentlyContinue
+            Optimize-RunningTarget
+        } else {
+            if (Get-Process -Name `$procBase -ErrorAction SilentlyContinue) {
+                Optimize-RunningTarget
+            }
+        }
+    } catch {
+        "`$(Get-Date -Format o) [ERROR] `$(`$_.Exception.Message)" | Out-File -FilePath `$logFile -Append -Encoding UTF8
+        Start-Sleep -Seconds 5
+    }
 }
 "@
         Set-Content -Path $scriptPath -Value $workerCode -Encoding UTF8 -Force
@@ -2438,14 +2816,13 @@ while (`$true) {
 
 $TglGameAffinity.Add_Unchecked({
     if ($script:loadingGameUI) { return }
-    $game = $script:GameList[$LstGames.SelectedIndex]
+    $game = Get-SelectedGameSafe; if ($null -eq $game) { return }
     $exe = $game.Exe; $procName = [System.IO.Path]::GetFileNameWithoutExtension($exe)
     $id = Get-CleanId $exe; $taskName = "BetterTitus_Affinity_$id"
     Invoke-SafeTweak "Desativar Afinidade ($exe)" {
         Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
         Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
         Remove-Item "$script:ConfigDir\Affinity_$id.ps1" -Force -ErrorAction SilentlyContinue
-        Remove-Item "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\$exe\PerfOptions" -Recurse -Force -ErrorAction SilentlyContinue
         Get-Process -Name $procName -ErrorAction SilentlyContinue | ForEach-Object {
             try {
                 $restoredMask = $_.ProcessorAffinity.ToInt64() -bor 1L
@@ -2459,9 +2836,10 @@ $TglGameAffinity.Add_Unchecked({
 
 $TglGameDx11.Add_Checked({
     if ($script:loadingGameUI) { return }
-    $game = $script:GameList[$LstGames.SelectedIndex]
+    $game = Get-SelectedGameSafe; if ($null -eq $game) { return }
     $exe = $game.Exe; $id = Get-CleanId $exe; $dxTaskName = "BetterTitus_DX11Watch_$id"
     $children = Resolve-RegPath "HKCU:\System\GameConfigStore\Children"
+    $psSafeExe = $exe.Replace("'", "''")
 
     Invoke-SafeTweak "Remover Latência de Tela Cheia ($exe)" {
         $found = $false
@@ -2478,10 +2856,11 @@ $TglGameDx11.Add_Checked({
             $watchScript = "$script:ConfigDir\DX11Watch_$id.ps1"
             $watchCode = @"
 `$children = '$children'
+`$targetExe = '$psSafeExe'
 if (Test-Path `$children) {
     foreach (`$sub in (Get-ChildItem `$children -ErrorAction SilentlyContinue)) {
         `$mExe = (Get-ItemProperty `$sub.PSPath -Name 'MatchedExeFullPath' -ErrorAction SilentlyContinue).MatchedExeFullPath
-        if (`$mExe -and (`$mExe -like '*\$exe' -or `$mExe -ieq '$exe')) {
+        if (`$mExe -and (`$mExe -like "*\`$targetExe" -or `$mExe -ieq `$targetExe)) {
             Set-ItemProperty -Path `$sub.PSPath -Name 'Flags' -Value 0x211 -Type DWord -Force
             Unregister-ScheduledTask -TaskName '$dxTaskName' -Confirm:`$false -ErrorAction SilentlyContinue
             Remove-Item '$watchScript' -Force -ErrorAction SilentlyContinue
@@ -2503,7 +2882,7 @@ if (Test-Path `$children) {
 
 $TglGameDx11.Add_Unchecked({
     if ($script:loadingGameUI) { return }
-    $game = $script:GameList[$LstGames.SelectedIndex]
+    $game = Get-SelectedGameSafe; if ($null -eq $game) { return }
     $exe = $game.Exe; $id = Get-CleanId $exe; $dxTaskName = "BetterTitus_DX11Watch_$id"
     Invoke-SafeTweak "Reverter Latência Tela Cheia ($exe)" {
         Stop-ScheduledTask -TaskName $dxTaskName -ErrorAction SilentlyContinue
@@ -2524,14 +2903,19 @@ $TglGameDx11.Add_Unchecked({
 
 $TglGameNvTel.Add_Checked({
     if ($script:loadingGameUI) { return }
-    $game = $script:GameList[$LstGames.SelectedIndex]
+    $game = Get-SelectedGameSafe; if ($null -eq $game) { return }
     $exe = $game.Exe; $procName = [System.IO.Path]::GetFileNameWithoutExtension($exe)
     $id = Get-CleanId $exe; $nvTaskName = "BetterTitus_NvTel_$id"
+    $gameNvBkp = "$script:ConfigDir\nv_backup_$id.json"
+
+    $psSafeExe  = $exe.Replace("'", "''")
+    $psSafeProc = $procName.Replace("'", "''")
+    $wmiSafeExe = $exe.Replace("\", "\\").Replace("'", "\'")
 
     $msg = if ($script:Lang -eq "PT") {
-        "Aviso de Funcionalidade:`n`nEnquanto $($game.Name) estiver aberto, os serviços NVDisplay.ContainerLocalSystem e NvContainerLocalSystem serão pausados.`n`nIsso pausa temporariamente o NVIDIA Overlay (ShadowPlay) e o Painel de Controle NVIDIA durante a partida. Ao fechar o jogo (ou reiniciar em caso de crash), o estado original exato de cada serviço será restaurado.`n`nDeseja ativar para $($game.Name)?"
+        "Aviso de Funcionalidade:`n`nEnquanto $($game.Name) estiver aberto, os serviços NVDisplay.ContainerLocalSystem e NvContainerLocalSystem serão pausados.`n`nIsso pausa temporariamente o NVIDIA Overlay (ShadowPlay) e o Painel de Controle NVIDIA durante a partida. Ao fechar o jogo (ou reiniciar em caso de crash), o estado original exato será restaurado sem interferir em outros jogos.`n`nDeseja ativar para $($game.Name)?"
     } else {
-        "Feature Notice:`n`nWhile $($game.Name) is running, NVDisplay.ContainerLocalSystem and NvContainerLocalSystem will be temporarily paused.`n`nThis temporarily pauses NVIDIA Overlay (ShadowPlay) and NVIDIA Control Panel in-game. Upon closing the game (or after any unexpected crash/reboot), each service's exact original configuration is automatically restored.`n`nEnable for $($game.Name)?"
+        "Feature Notice:`n`nWhile $($game.Name) is running, NVDisplay.ContainerLocalSystem and NvContainerLocalSystem will be temporarily paused.`n`nThis temporarily pauses NVIDIA Overlay (ShadowPlay) and NVIDIA Control Panel in-game. Upon closing the game (or after any unexpected crash/reboot), each service's exact original configuration is restored per-game.`n`nEnable for $($game.Name)?"
     }
     $res = [System.Windows.MessageBox]::Show($msg, "BetterTitus - NVIDIA Telemetry", [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Information)
     if ($res -ne [System.Windows.MessageBoxResult]::Yes) {
@@ -2543,9 +2927,10 @@ $TglGameNvTel.Add_Checked({
         Stop-ScheduledTask -TaskName $nvTaskName -ErrorAction SilentlyContinue
         $scriptPath = "$script:ConfigDir\NvTel_$id.ps1"
         $nvCode = @"
-`$exeName  = '$exe'
-`$procBase = '$procName'
-`$bkpFile  = '$script:NvBackup'
+`$exeName  = '$psSafeExe'
+`$procBase = '$psSafeProc'
+`$bkpFile  = '$gameNvBkp'
+`$logFile  = '$script:ConfigDir\worker_nvtel_$id.log'
 `$nvSvcs   = @('NVDisplay.ContainerLocalSystem', 'NvContainerLocalSystem')
 
 function Restore-NvOriginalState {
@@ -2553,13 +2938,15 @@ function Restore-NvOriginalState {
         try {
             `$saved = Get-Content `$bkpFile -Raw | ConvertFrom-Json
             foreach (`$item in `$saved) {
+                `$sName = `$item.Name.ToString()
+                if (`$sName -notin `$nvSvcs) { continue }
                 `$st = [int]`$item.Start
                 if (`$st -notin @(2,3,4)) { `$st = 2 }
-                `$reg = "HKLM:\SYSTEM\CurrentControlSet\Services\`$(`$item.Name)"
+                `$reg = "HKLM:\SYSTEM\CurrentControlSet\Services\`$sName"
                 if (Test-Path `$reg) {
                     Set-ItemProperty -Path `$reg -Name 'Start' -Value `$st -Type DWord -Force -ErrorAction SilentlyContinue
                     `$wasRun = (`$item.WasRunning -is [bool] -and `$item.WasRunning) -or (`$item.WasRunning.ToString() -ieq 'true')
-                    if (`$wasRun) { Start-Service -Name `$item.Name -ErrorAction SilentlyContinue }
+                    if (`$wasRun) { Start-Service -Name `$sName -ErrorAction SilentlyContinue }
                 }
             }
             Remove-Item `$bkpFile -Force -ErrorAction SilentlyContinue
@@ -2598,20 +2985,24 @@ if (-not (Get-Process -Name `$procBase -ErrorAction SilentlyContinue)) {
 
 try {
     Unregister-Event -SourceIdentifier 'BT_NvWatch_$id' -ErrorAction SilentlyContinue
-    Register-WmiEvent -Query "SELECT * FROM __InstanceCreationEvent WITHIN 3 WHERE TargetInstance ISA 'Win32_Process' AND TargetInstance.Name = '`$exeName'" -SourceIdentifier 'BT_NvWatch_$id' -ErrorAction SilentlyContinue
+    Register-WmiEvent -Query "SELECT * FROM __InstanceCreationEvent WITHIN 3 WHERE TargetInstance ISA 'Win32_Process' AND TargetInstance.Name = '$wmiSafeExe'" -SourceIdentifier 'BT_NvWatch_$id' -ErrorAction SilentlyContinue
 
     while (`$true) {
-        if (-not (Get-Process -Name `$procBase -ErrorAction SilentlyContinue)) {
-            `$evt = Wait-Event -SourceIdentifier 'BT_NvWatch_$id'
-            if (`$evt) { Remove-Event -EventIdentifier `$evt.EventIdentifier -ErrorAction SilentlyContinue }
-        }
-        Start-Sleep -Seconds 3
-        if (Get-Process -Name `$procBase -ErrorAction SilentlyContinue) {
-            Pause-NvDuringGame
-            while (Get-Process -Name `$procBase -ErrorAction SilentlyContinue) {
-                Start-Sleep -Seconds 3
+        try {
+            if (-not (Get-Process -Name `$procBase -ErrorAction SilentlyContinue)) {
+                `$evt = Wait-Event -SourceIdentifier 'BT_NvWatch_$id' -Timeout 60
+                if (`$evt) { Remove-Event -EventIdentifier `$evt.EventIdentifier -ErrorAction SilentlyContinue }
             }
-            Restore-NvOriginalState
+            if (Get-Process -Name `$procBase -ErrorAction SilentlyContinue) {
+                Pause-NvDuringGame
+                while (Get-Process -Name `$procBase -ErrorAction SilentlyContinue) {
+                    Start-Sleep -Seconds 3
+                }
+                Restore-NvOriginalState
+            }
+        } catch {
+            "`$(Get-Date -Format o) [ERROR] `$(`$_.Exception.Message)" | Out-File -FilePath `$logFile -Append -Encoding UTF8
+            Start-Sleep -Seconds 5
         }
     }
 } finally {
@@ -2631,19 +3022,19 @@ try {
 
 $TglGameNvTel.Add_Unchecked({
     if ($script:loadingGameUI) { return }
-    $game = $script:GameList[$LstGames.SelectedIndex]
+    $game = Get-SelectedGameSafe; if ($null -eq $game) { return }
     $exe = $game.Exe; $id = Get-CleanId $exe; $nvTaskName = "BetterTitus_NvTel_$id"
     Invoke-SafeTweak "Desativar Gerenciamento NVIDIA ($exe)" {
         Stop-ScheduledTask -TaskName $nvTaskName -ErrorAction SilentlyContinue
         Unregister-ScheduledTask -TaskName $nvTaskName -Confirm:$false -ErrorAction SilentlyContinue
         Remove-Item "$script:ConfigDir\NvTel_$id.ps1" -Force -ErrorAction SilentlyContinue
-        Restore-NvidiaBackupIfNeeded
+        Restore-NvidiaBackupForGame $id
     }
     Update-SelectedGameUI
 })
 
 # ==============================================================================
-# DETECÇÃO, APLICAÇÃO E REVERSÃO BIDIRECIONAL DE TWEAKS
+# DETECÇÃO ASSÍNCRONA DO SISTEMA (ZERO CONGELAMENTO NA UI)
 # ==============================================================================
 $script:loadingState = $false
 $script:AppliedSecurityCache = @{ BitLocker = $false; HVCI = $false; Mitigations = $false }
@@ -2659,7 +3050,6 @@ $SafeLeftChecks = @(
 )
 $AllLeftChecks = $SafeLeftChecks + @($ChkBitLocker, $ChkHVCI, $ChkCpuMitigations)
 
-# Prevenção de conflito Hibernation x Fast Startup
 $ChkHibernation.Add_Checked({
     if (-not $script:loadingState -and $TglFastStart.IsChecked) {
         $TglFastStart.IsChecked = $false
@@ -2673,133 +3063,223 @@ $ChkHibernation.Add_Unchecked({
     }
 })
 
-function Sync-SystemState {
-    $script:loadingState = $true
+$script:SyncRunning = $false
+function Sync-SystemStateAsync ([scriptblock]$OnComplete = $null) {
+    if ($script:SyncRunning) { return }
+    $script:SyncRunning = $true
+    $BtnSelectInstalled.IsEnabled = $false
 
-    $ChkActivity.IsChecked        = ((Get-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" "EnableActivityFeed" 1) -eq 0)
-    $ChkConsumer.IsChecked        = ((Get-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent" "DisableWindowsConsumerFeatures" 0) -eq 1)
-    $ChkDelivery.IsChecked        = (((Get-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimization\Config" "DODownloadMode" 1) -eq 0) -or ((Get-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization" "DODownloadMode" 1) -eq 0))
-    $ChkEndTask.IsChecked         = ((Get-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced\TaskbarDeveloperSettings" "TaskbarEndTask" 0) -eq 1)
-    $ChkFolderDisc.IsChecked      = ((Get-Reg "HKCU:\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\Bags\AllFolders\Shell" "FolderType" "") -eq "NotSpecified")
+    Refresh-NvidiaPresence
 
-    $hibOff = ((Get-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\Power" "HibernateEnabled" 1) -eq 0)
-    $ChkHibernation.IsChecked     = $hibOff
-    $TglFastStart.IsEnabled       = (-not $hibOff)
+    $ps = [PowerShell]::Create()
+    [void]$ps.AddScript({
+        param($UserRegRoot, $SafeManualServices, $RamKB, $SysDrive)
 
-    $ChkLocation.IsChecked        = ((Get-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location" "Value" "Allow") -eq "Deny")
+        function RPath([string]$p) {
+            if ($p -like "HKCU:\*") { return ($UserRegRoot + "\" + $p.Substring(6)) }
+            return $p
+        }
+        function RGet([string]$p, [string]$n, $def = $null) {
+            try {
+                $rp = RPath $p
+                if (Test-Path $rp) {
+                    $o = Get-ItemProperty -Path $rp -Name $n -ErrorAction SilentlyContinue
+                    if ($null -ne $o) {
+                        $pi = $o.PSObject.Properties[$n]
+                        if ($null -ne $pi -and $null -ne $pi.Value) { return $pi.Value }
+                    }
+                }
+            } catch {}
+            return $def
+        }
+        function SvcStart([string]$s) { return (RGet "HKLM:\SYSTEM\CurrentControlSet\Services\$s" "Start" -1) }
 
-    $memCompDisabled = $false
-    if (Get-Command Get-MMAgent -ErrorAction SilentlyContinue) {
-        try { $memCompDisabled = ((Get-MMAgent -ErrorAction SilentlyContinue).MemoryCompression -eq $false) } catch {}
-    }
-    $ChkMemCompression.IsChecked  = $memCompDisabled
+        $memCompDisabled = $false
+        if (Get-Command Get-MMAgent -ErrorAction SilentlyContinue) {
+            try { $memCompDisabled = ((Get-MMAgent -ErrorAction SilentlyContinue).MemoryCompression -eq $false) } catch {}
+        }
 
-    $ChkStoreSearch.IsChecked     = ((Get-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer" "NoUseStoreOpenWith" 0) -eq 1)
-    $ChkDeviceCompanion.IsChecked = ((Get-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Device Metadata" "PreventDeviceMetadataFromNetwork" 0) -eq 1)
+        $manualCount = 0; $existingCount = 0
+        foreach ($svc in $SafeManualServices) {
+            $st = SvcStart $svc
+            if ($st -ne -1) { $existingCount++; if ($st -ge 3) { $manualCount++ } }
+        }
 
-    $manualCount = 0; $existingCount = 0
-    foreach ($svc in $script:SafeManualServices) {
-        $st = Get-ServiceStartModeFast $svc
-        if ($st -ne -1) { $existingCount++; if ($st -ge 3) { $manualCount++ } }
-    }
-    $ChkServicesMan.IsChecked     = ($existingCount -gt 0 -and ($manualCount -ge ([math]::Ceiling($existingCount * 0.7))))
-    $ChkTelemetry.IsChecked       = (((Get-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection" "AllowTelemetry" 1) -eq 0) -or ((Get-ServiceStartModeFast "DiagTrack") -eq 4))
-    $ChkWidgets.IsChecked         = (((Get-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" "TaskbarDa" 1) -eq 0) -or ((Get-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Dsh" "AllowNewsAndInterests" 1) -eq 0))
-    $ChkWPBT.IsChecked            = ((Get-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager" "DisableWpbtExecution" 0) -eq 1)
-    $ChkSearchIdx.IsChecked       = ((Get-ServiceStartModeFast "WSearch") -eq 4)
+        $ceipTask = Get-ScheduledTask -TaskPath "\Microsoft\Windows\Application Experience\" -TaskName "Microsoft Compatibility Appraiser" -ErrorAction SilentlyContinue
 
-    $ChkBgApps.IsChecked          = ((Get-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications" "GlobalUserDisabled" 0) -eq 1)
+        $blOff = $false
+        if (Get-Command Get-BitLockerVolume -ErrorAction SilentlyContinue) {
+            try {
+                $blVol = Get-BitLockerVolume -MountPoint $SysDrive -ErrorAction SilentlyContinue
+                if ($null -ne $blVol -and $blVol.ProtectionStatus -eq 'Off' -and $blVol.VolumeStatus -eq 'FullyDecrypted') { $blOff = $true }
+            } catch {}
+        } else {
+            $blOff = ((SvcStart "BDESVC") -eq 4)
+        }
 
-    $ceipTask = Get-ScheduledTask -TaskPath "\Microsoft\Windows\Application Experience\" -TaskName "Microsoft Compatibility Appraiser" -ErrorAction SilentlyContinue
-    $ChkOptTasks.IsChecked        = ($null -ne $ceipTask -and $ceipTask.State -eq 'Disabled')
+        $hibOff = ((RGet "HKLM:\SYSTEM\CurrentControlSet\Control\Power" "HibernateEnabled" 1) -eq 0)
+        $netThr = RGet "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" "NetworkThrottlingIndex" 10
+        $mpoDwm = RGet "HKLM:\SOFTWARE\Microsoft\Windows\Dwm" "OverlayTestMode" 0
+        $mpoLeg = RGet "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" "DisableOverlays" 0
 
-    $ChkReservedStorage.IsChecked = ((Get-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\ReserveManager" "ShippedWithReserves" 1) -eq 0)
-    $ChkExplorerGallery.IsChecked = ((Get-Reg "HKCU:\Software\Classes\CLSID\{e88865ea-0e1c-4e20-9aa6-edcd0212c87c}" "System.IsPinnedToNameSpaceTree" 1) -eq 0)
-    $ChkGameDVR.IsChecked         = (((Get-Reg "HKCU:\System\GameConfigStore" "GameDVR_Enabled" 1) -eq 0) -or ((Get-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\GameDVR" "AllowGameDVR" 1) -eq 0))
-    $ChkIPv4Pref.IsChecked        = ((Get-Reg "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters" "DisabledComponents" 0) -eq 32)
-    $ChkTeredo.IsChecked          = ((Get-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\TCPIP\v6Transition" "Teredo_State" "") -eq "Disabled")
-    $ChkMenuDelay.IsChecked       = ((Get-Reg "HKCU:\Control Panel\Desktop" "MenuShowDelay" "400").ToString() -eq "0")
-    $ChkEdgeDebloat.IsChecked     = ((Get-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Edge" "BackgroundModeEnabled" 1) -eq 0)
+        return @{
+            ChkActivity        = ((RGet "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" "EnableActivityFeed" 1) -eq 0)
+            ChkConsumer        = ((RGet "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent" "DisableWindowsConsumerFeatures" 0) -eq 1)
+            ChkDelivery        = (((RGet "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimization\Config" "DODownloadMode" 1) -eq 0) -or ((RGet "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization" "DODownloadMode" 1) -eq 0))
+            ChkEndTask         = ((RGet "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced\TaskbarDeveloperSettings" "TaskbarEndTask" 0) -eq 1)
+            ChkFolderDisc      = ((RGet "HKCU:\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\Bags\AllFolders\Shell" "FolderType" "") -eq "NotSpecified")
+            ChkHibernation     = $hibOff
+            ChkLocation        = ((RGet "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location" "Value" "Allow") -eq "Deny")
+            ChkMemCompression  = $memCompDisabled
+            ChkStoreSearch     = ((RGet "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer" "NoUseStoreOpenWith" 0) -eq 1)
+            ChkDeviceCompanion = ((RGet "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Device Metadata" "PreventDeviceMetadataFromNetwork" 0) -eq 1)
+            ChkServicesMan     = ($existingCount -gt 0 -and ($manualCount -ge ([math]::Ceiling($existingCount * 0.7))))
+            ChkTelemetry       = (((RGet "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection" "AllowTelemetry" 1) -eq 0) -or ((SvcStart "DiagTrack") -eq 4))
+            ChkWidgets         = (((RGet "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" "TaskbarDa" 1) -eq 0) -or ((RGet "HKLM:\SOFTWARE\Policies\Microsoft\Dsh" "AllowNewsAndInterests" 1) -eq 0))
+            ChkWPBT            = ((RGet "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager" "DisableWpbtExecution" 0) -eq 1)
+            ChkSearchIdx       = ((SvcStart "WSearch") -eq 4)
+            ChkBgApps          = ((RGet "HKCU:\Software\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications" "GlobalUserDisabled" 0) -eq 1)
+            ChkOptTasks        = ($null -ne $ceipTask -and $ceipTask.State -eq 'Disabled')
+            ChkReservedStorage = ((RGet "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\ReserveManager" "ShippedWithReserves" 1) -eq 0)
+            ChkExplorerGallery = ((RGet "HKCU:\Software\Classes\CLSID\{e88865ea-0e1c-4e20-9aa6-edcd0212c87c}" "System.IsPinnedToNameSpaceTree" 1) -eq 0)
+            ChkGameDVR         = (((RGet "HKCU:\System\GameConfigStore" "GameDVR_Enabled" 1) -eq 0) -or ((RGet "HKLM:\SOFTWARE\Policies\Microsoft\Windows\GameDVR" "AllowGameDVR" 1) -eq 0))
+            ChkIPv4Pref        = ((RGet "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters" "DisabledComponents" 0) -eq 32)
+            ChkTeredo          = ((RGet "HKLM:\SOFTWARE\Policies\Microsoft\Windows\TCPIP\v6Transition" "Teredo_State" "") -eq "Disabled")
+            ChkMenuDelay       = ((RGet "HKCU:\Control Panel\Desktop" "MenuShowDelay" "400").ToString() -eq "0")
+            ChkEdgeDebloat     = ((RGet "HKLM:\SOFTWARE\Policies\Microsoft\Edge" "BackgroundModeEnabled" 1) -eq 0)
+            ChkNetThrottle     = ($netThr -eq -1 -or $netThr -eq 0xffffffff -or $netThr -eq 4294967295)
+            ChkPowerThrottle   = ((RGet "HKLM:\SYSTEM\CurrentControlSet\Control\Power\PowerThrottling" "PowerThrottlingOff" 0) -eq 1)
+            ChkClassicContext  = (Test-Path (RPath "HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32"))
+            ChkStorageSense    = ((RGet "HKCU:\Software\Microsoft\Windows\CurrentVersion\StorageSense\Parameters\StoragePolicy" "01" 1) -eq 0)
+            ChkSvcHost         = ($RamKB -gt 0 -and ([int64](RGet "HKLM:\SYSTEM\CurrentControlSet\Control" "SvcHostSplitThresholdInKB" 3670016) -ge ($RamKB - 4096)))
+            ChkUsbSuspend      = ((RGet "HKLM:\SYSTEM\CurrentControlSet\Services\USB" "DisableSelectiveSuspend" 0) -eq 1)
+            ChkBestPerf        = ((RGet "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" "VisualFXSetting" 0) -eq 2)
+            ChkWinAI           = (((RGet "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot" "TurnOffWindowsCopilot" 0) -eq 1) -or ((RGet "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsAI" "DisableAIDataAnalysis" 0) -eq 1))
+            ChkBitLocker       = $blOff
+            ChkHVCI            = ((RGet "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" "Enabled" 1) -eq 0)
+            ChkCpuMitigations  = (((RGet "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" "FeatureSettingsOverride" 0) -eq 3) -and ((RGet "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" "FeatureSettingsOverrideMask" 0) -eq 3))
 
-    $netThr = Get-Reg "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" "NetworkThrottlingIndex" 10
-    $ChkNetThrottle.IsChecked     = ($netThr -eq -1 -or $netThr -eq 0xffffffff -or $netThr -eq 4294967295)
-    $ChkPowerThrottle.IsChecked   = ((Get-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\Power\PowerThrottling" "PowerThrottlingOff" 0) -eq 1)
-    $ChkClassicContext.IsChecked  = (Test-Path (Resolve-RegPath "HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32"))
-    $ChkStorageSense.IsChecked    = ((Get-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\StorageSense\Parameters\StoragePolicy" "01" 1) -eq 0)
+            TglBsod            = ((RGet "HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl" "DisplayParameters" 0) -eq 1)
+            TglDarkWin         = ((RGet "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" "AppsUseLightTheme" 1) -eq 0)
+            TglLongPaths       = ((RGet "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled" 0) -eq 1)
+            TglFastStart       = (-not $hibOff) -and ((RGet "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power" "HiberbootEnabled" 1) -eq 1)
+            TglFileExt         = ((RGet "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" "HideFileExt" 1) -eq 0)
+            TglHiddenFiles     = ((RGet "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" "Hidden" 2) -eq 1)
+            TglGameMode        = ((RGet "HKCU:\Software\Microsoft\GameBar" "AutoGameModeEnabled" 1) -eq 1)
+            TglAcrylic         = ((RGet "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" "DisableAcrylicBackgroundOnLogon" 0) -eq 0)
+            TglVerboseLogon    = ((RGet "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" "VerboseStatus" 0) -eq 1)
+            TglMouseAccel      = ((RGet "HKCU:\Control Panel\Mouse" "MouseSpeed" "1").ToString() -ne "0")
+            TglMmProfile       = ((RGet "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" "GPU Priority" 2) -eq 8)
+            TglNumLock         = ((RGet "Registry::HKU\.DEFAULT\Control Panel\Keyboard" "InitialKeyboardIndicators" "0").ToString() -in @("2", "2147483650"))
+            TglBingSearch      = (((RGet "HKCU:\Software\Policies\Microsoft\Windows\Explorer" "DisableSearchBoxSuggestions" 0) -eq 0) -and ((RGet "HKCU:\Software\Microsoft\Windows\CurrentVersion\Search" "BingSearchEnabled" 1) -ne 0))
+            TglStartRecs       = ((RGet "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer" "HideRecommendedSection" 0) -eq 0)
+            TglStickyKeys      = ((RGet "HKCU:\Control Panel\Accessibility\StickyKeys" "Flags" "510").ToString() -ne "506")
+            TglCenterTaskbar   = ((RGet "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" "TaskbarAl" 1) -eq 1)
+            TglSearchIcon      = ((RGet "HKCU:\Software\Microsoft\Windows\CurrentVersion\Search" "SearchboxTaskbarMode" 1) -ne 0)
+            TglTaskView        = ((RGet "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" "ShowTaskViewButton" 1) -eq 1)
+            TglSnap            = ((RGet "HKCU:\Control Panel\Desktop" "WindowArrangementActive" "1").ToString() -eq "1")
+            MpoIndex           = if ($mpoDwm -eq 5 -or $mpoLeg -eq 1) { 1 } else { 0 }
+            WinUpdateDisabled  = ((SvcStart "wuauserv") -eq 4)
+        }
+    }).AddArgument($script:UserCtx.RegRoot).AddArgument($script:SafeManualServices).AddArgument($script:HwInfo.RamKB).AddArgument($env:SystemDrive)
 
-    if ($script:HwInfo.RamKB -gt 0) {
-        $ChkSvcHost.IsChecked     = ([int64](Get-Reg "HKLM:\SYSTEM\CurrentControlSet\Control" "SvcHostSplitThresholdInKB" 380000) -ge ($script:HwInfo.RamKB - 4096))
-    } else {
-        $ChkSvcHost.IsEnabled     = $false
-        $ChkSvcHost.IsChecked     = $false
-    }
+    $handle = $ps.BeginInvoke()
+    $syncTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $syncTimer.Interval = [TimeSpan]::FromMilliseconds(40)
+    $syncTimer.Tag = [PSCustomObject]@{ PS = $ps; Handle = $handle; Callback = $OnComplete }
 
-    $ChkUsbSuspend.IsChecked      = ((Get-Reg "HKLM:\SYSTEM\CurrentControlSet\Services\USB" "DisableSelectiveSuspend" 0) -eq 1)
-    $ChkBestPerf.IsChecked        = ((Get-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" "VisualFXSetting" 0) -eq 2)
-    $ChkWinAI.IsChecked           = (((Get-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot" "TurnOffWindowsCopilot" 0) -eq 1) -or ((Get-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsAI" "DisableAIDataAnalysis" 0) -eq 1))
+    $syncTimer.Add_Tick({
+        param($sender, $e)
+        $ctx = $sender.Tag
+        if ($ctx.Handle.IsCompleted) {
+            $sender.Stop()
+            try {
+                $resCollection = $ctx.PS.EndInvoke($ctx.Handle)
+                $st = $resCollection[0]
+                if ($null -ne $st) {
+                    $script:loadingState = $true
+                    foreach ($chk in $AllLeftChecks) {
+                        if ($st.ContainsKey($chk.Name)) { $chk.IsChecked = [bool]$st[$chk.Name] }
+                    }
+                    $TglFastStart.IsEnabled = (-not [bool]$st["ChkHibernation"])
 
-    # Segurança e Overhead de CPU
-    $blOff = $false
-    if (Get-Command Get-BitLockerVolume -ErrorAction SilentlyContinue) {
-        try {
-            $blVol = Get-BitLockerVolume -MountPoint $env:SystemDrive -ErrorAction SilentlyContinue
-            if ($null -ne $blVol -and $blVol.ProtectionStatus -eq 'Off' -and $blVol.VolumeStatus -eq 'FullyDecrypted') { $blOff = $true }
-        } catch {}
-    } else {
-        $blOff = ((Get-ServiceStartModeFast "BDESVC") -eq 4)
-    }
-    $ChkBitLocker.IsChecked = $blOff
-    $script:AppliedSecurityCache.BitLocker = $blOff
+                    if ($script:HwInfo.RamKB -le 0) {
+                        $ChkSvcHost.IsEnabled = $false
+                        $ChkSvcHost.IsChecked = $false
+                        Write-BTLog "Aviso: RAM física não detectada via WMI; ajuste de SvcHostSplitThreshold desabilitado." "WARN"
+                    }
 
-    $hvciVal = Get-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" "Enabled" 1
-    $hvciOff = ($hvciVal -eq 0)
-    $ChkHVCI.IsChecked = $hvciOff
-    $script:AppliedSecurityCache.HVCI = $hvciOff
+                    $script:AppliedSecurityCache.BitLocker   = [bool]$st["ChkBitLocker"]
+                    $script:AppliedSecurityCache.HVCI        = [bool]$st["ChkHVCI"]
+                    $script:AppliedSecurityCache.Mitigations = [bool]$st["ChkCpuMitigations"]
 
-    $mitOff = (((Get-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" "FeatureSettingsOverride" 0) -eq 3) -and ((Get-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" "FeatureSettingsOverrideMask" 0) -eq 3))
-    $ChkCpuMitigations.IsChecked = $mitOff
-    $script:AppliedSecurityCache.Mitigations = $mitOff
+                    $script:InitialTweakState = @{}
+                    foreach ($chk in $AllLeftChecks) {
+                        $script:InitialTweakState[$chk.Name] = [bool]$chk.IsChecked
+                    }
 
-    $script:InitialTweakState = @{}
-    foreach ($chk in $AllLeftChecks) {
-        $script:InitialTweakState[$chk.Name] = [bool]$chk.IsChecked
-    }
+                    foreach ($tglName in @(
+                        "TglBsod","TglDarkWin","TglLongPaths","TglFastStart","TglFileExt","TglHiddenFiles",
+                        "TglGameMode","TglAcrylic","TglVerboseLogon","TglMouseAccel","TglMmProfile","TglNumLock",
+                        "TglBingSearch","TglStartRecs","TglStickyKeys","TglCenterTaskbar","TglSearchIcon","TglTaskView","TglSnap"
+                    )) {
+                        $ctrl = Get-Variable -Name $tglName -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+                        if ($null -ne $ctrl -and $st.ContainsKey($tglName)) { $ctrl.IsChecked = [bool]$st[$tglName] }
+                    }
+                    $CmbMPO.SelectedIndex = [int]$st["MpoIndex"]
 
-    # Coluna Direita
-    $TglBsod.IsChecked            = ((Get-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl" "DisplayParameters" 0) -eq 1)
-    $TglDarkWin.IsChecked         = ((Get-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" "AppsUseLightTheme" 1) -eq 0)
-    $TglLongPaths.IsChecked       = ((Get-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled" 0) -eq 1)
-    $TglFastStart.IsChecked       = (-not $hibOff) -and ((Get-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power" "HiberbootEnabled" 1) -eq 1)
-    $TglFileExt.IsChecked         = ((Get-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" "HideFileExt" 1) -eq 0)
-    $TglHiddenFiles.IsChecked     = ((Get-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" "Hidden" 2) -eq 1)
-    $TglGameMode.IsChecked        = ((Get-Reg "HKCU:\Software\Microsoft\GameBar" "AutoGameModeEnabled" 1) -eq 1)
-    $TglAcrylic.IsChecked         = ((Get-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" "DisableAcrylicBackgroundOnLogon" 0) -eq 0)
-    $TglVerboseLogon.IsChecked    = ((Get-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" "VerboseStatus" 0) -eq 1)
-    $TglMouseAccel.IsChecked      = ((Get-Reg "HKCU:\Control Panel\Mouse" "MouseSpeed" "1").ToString() -ne "0")
-    $TglMmProfile.IsChecked       = ((Get-Reg "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" "GPU Priority" 2) -eq 8)
-    $TglNumLock.IsChecked         = ((Get-Reg "Registry::HKU\.DEFAULT\Control Panel\Keyboard" "InitialKeyboardIndicators" "0").ToString() -in @("2", "2147483650"))
-    $TglBingSearch.IsChecked      = (((Get-Reg "HKCU:\Software\Policies\Microsoft\Windows\Explorer" "DisableSearchBoxSuggestions" 0) -eq 0) -and ((Get-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Search" "BingSearchEnabled" 1) -ne 0))
-    $TglStartRecs.IsChecked       = ((Get-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer" "HideRecommendedSection" 0) -eq 0)
-    $TglStickyKeys.IsChecked      = ((Get-Reg "HKCU:\Control Panel\Accessibility\StickyKeys" "Flags" "510").ToString() -ne "506")
-    $TglCenterTaskbar.IsChecked   = ((Get-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" "TaskbarAl" 1) -eq 1)
-    $TglSearchIcon.IsChecked      = ((Get-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Search" "SearchboxTaskbarMode" 1) -ne 0)
-    $TglTaskView.IsChecked        = ((Get-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" "ShowTaskViewButton" 1) -eq 1)
-    $TglSnap.IsChecked            = ((Get-Reg "HKCU:\Control Panel\Desktop" "WindowArrangementActive" "1").ToString() -eq "1")
-
-    $mpoDwm = Get-Reg "HKLM:\SOFTWARE\Microsoft\Windows\Dwm" "OverlayTestMode" 0
-    $mpoLeg = Get-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" "DisableOverlays" 0
-    $CmbMPO.SelectedIndex = if ($mpoDwm -eq 5 -or $mpoLeg -eq 1) { 1 } else { 0 }
-
-    $script:WinUpdateDisabledCache = ((Get-ServiceStartModeFast "wuauserv") -eq 4)
-    $StatusWinUpdateCard.Foreground = if ($script:WinUpdateDisabledCache) { "#F87171" } else { "#4ADE80" }
-    Refresh-CachedStatusLabels
-
-    $script:loadingState = $false
+                    $script:WinUpdateDisabledCache = [bool]$st["WinUpdateDisabled"]
+                    $StatusWinUpdateCard.Foreground = if ($script:WinUpdateDisabledCache) { "#F87171" } else { "#4ADE80" }
+                    Refresh-CachedStatusLabels
+                    $script:loadingState = $false
+                }
+            } catch {
+                Write-BTLog "Erro ao sincronizar estado do sistema: $($_.Exception.Message)" "ERROR"
+                $script:loadingState = $false
+            } finally {
+                $ctx.PS.Dispose()
+                $script:SyncRunning = $false
+                $BtnSelectInstalled.IsEnabled = $true
+                if ($null -ne $ctx.Callback) { & $ctx.Callback }
+            }
+        }
+    })
+    $syncTimer.Start()
 }
 
-# Eventos dos Interruptores da Direita (Com Broadcast Real-Time / API Nativa)
-$TglBsod.Add_Checked({   if (-not $script:loadingState) { Invoke-SafeTweak "BSoD Verbose + No AutoReboot -> ON"  { Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl" "DisplayParameters" 1; Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl" "AutoReboot" 0 } } })
-$TglBsod.Add_Unchecked({ if (-not $script:loadingState) { Invoke-SafeTweak "BSoD Verbose -> OFF" { Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl" "DisplayParameters" 0; Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl" "AutoReboot" 1 } } })
+# ==============================================================================
+# INTERRUPTORES EM TEMPO REAL (COM BACKUP DE ESTADO ORIGINAL)
+# ==============================================================================
+$TglBsod.Add_Checked({
+    if (-not $script:loadingState) {
+        Invoke-SafeTweak "BSoD Verbose + No AutoReboot -> ON" {
+            if (-not (Test-Path $script:CrashBackup)) {
+                $curAuto = Get-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl" "AutoReboot" 1
+                $curDisp = Get-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl" "DisplayParameters" 0
+                [PSCustomObject]@{ AutoReboot = [int]$curAuto; DisplayParameters = [int]$curDisp } | ConvertTo-Json | Set-Content -Path $script:CrashBackup -Encoding UTF8 -Force
+            }
+            Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl" "DisplayParameters" 1
+            Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl" "AutoReboot" 0
+        }
+    }
+})
+$TglBsod.Add_Unchecked({
+    if (-not $script:loadingState) {
+        Invoke-SafeTweak "BSoD Verbose -> Restaurar Original" {
+            $origAuto = 1; $origDisp = 0
+            if (Test-Path $script:CrashBackup) {
+                try {
+                    $bkp = Get-Content $script:CrashBackup -Raw | ConvertFrom-Json
+                    $origAuto = [int]$bkp.AutoReboot
+                    $origDisp = [int]$bkp.DisplayParameters
+                } catch {}
+                Remove-Item $script:CrashBackup -Force -ErrorAction SilentlyContinue
+            }
+            Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl" "DisplayParameters" $origDisp
+            Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl" "AutoReboot" $origAuto
+        }
+    }
+})
 
 $TglDarkWin.Add_Checked({   if (-not $script:loadingState) { Invoke-SafeTweak "Dark Theme -> ON"  { Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" "AppsUseLightTheme" 0; Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" "SystemUsesLightTheme" 0; [BetterTitus.NativeMethods]::BroadcastSettingsChange() } } })
 $TglDarkWin.Add_Unchecked({ if (-not $script:loadingState) { Invoke-SafeTweak "Dark Theme -> OFF" { Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" "AppsUseLightTheme" 1; Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" "SystemUsesLightTheme" 1; [BetterTitus.NativeMethods]::BroadcastSettingsChange() } } })
@@ -2828,8 +3308,43 @@ $TglVerboseLogon.Add_Unchecked({ if (-not $script:loadingState) { Invoke-SafeTwe
 $TglMouseAccel.Add_Checked({   if (-not $script:loadingState) { Invoke-SafeTweak "Mouse Acceleration -> ON"  { Set-Reg "HKCU:\Control Panel\Mouse" "MouseSpeed" "1" "String"; Set-Reg "HKCU:\Control Panel\Mouse" "MouseThreshold1" "6" "String"; Set-Reg "HKCU:\Control Panel\Mouse" "MouseThreshold2" "10" "String"; [BetterTitus.NativeMethods]::SetMouseAccel($true) } } })
 $TglMouseAccel.Add_Unchecked({ if (-not $script:loadingState) { Invoke-SafeTweak "Mouse Acceleration -> OFF (1:1)" { Set-Reg "HKCU:\Control Panel\Mouse" "MouseSpeed" "0" "String"; Set-Reg "HKCU:\Control Panel\Mouse" "MouseThreshold1" "0" "String"; Set-Reg "HKCU:\Control Panel\Mouse" "MouseThreshold2" "0" "String"; [BetterTitus.NativeMethods]::SetMouseAccel($false) } } })
 
-$TglMmProfile.Add_Checked({   if (-not $script:loadingState) { Invoke-SafeTweak "Multimedia Gaming Profile -> ON"  { Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" "GPU Priority" 8; Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" "Priority" 6; Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" "Scheduling Category" "High" "String" } } })
-$TglMmProfile.Add_Unchecked({ if (-not $script:loadingState) { Invoke-SafeTweak "Multimedia Gaming Profile -> OFF" { Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" "GPU Priority" 2; Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" "Priority" 2 } } })
+$TglMmProfile.Add_Checked({
+    if (-not $script:loadingState) {
+        Invoke-SafeTweak "Multimedia Gaming Profile -> ON" {
+            $mmPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games"
+            if (-not (Test-Path $script:MmBackup)) {
+                [PSCustomObject]@{
+                    GpuPriority        = [int](Get-Reg $mmPath "GPU Priority" 2)
+                    Priority           = [int](Get-Reg $mmPath "Priority" 2)
+                    SchedulingCategory = (Get-Reg $mmPath "Scheduling Category" "Medium").ToString()
+                } | ConvertTo-Json | Set-Content -Path $script:MmBackup -Encoding UTF8 -Force
+            }
+            Set-Reg $mmPath "GPU Priority" 8
+            Set-Reg $mmPath "Priority" 6
+            Set-Reg $mmPath "Scheduling Category" "High" "String"
+        }
+    }
+})
+$TglMmProfile.Add_Unchecked({
+    if (-not $script:loadingState) {
+        Invoke-SafeTweak "Multimedia Gaming Profile -> Restaurar Original" {
+            $mmPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games"
+            $gpuP = 2; $prio = 2; $sched = "Medium"
+            if (Test-Path $script:MmBackup) {
+                try {
+                    $bkp = Get-Content $script:MmBackup -Raw | ConvertFrom-Json
+                    $gpuP  = [int]$bkp.GpuPriority
+                    $prio  = [int]$bkp.Priority
+                    $sched = $bkp.SchedulingCategory.ToString()
+                } catch {}
+                Remove-Item $script:MmBackup -Force -ErrorAction SilentlyContinue
+            }
+            Set-Reg $mmPath "GPU Priority" $gpuP
+            Set-Reg $mmPath "Priority" $prio
+            Set-Reg $mmPath "Scheduling Category" $sched "String"
+        }
+    }
+})
 
 $TglNumLock.Add_Checked({   if (-not $script:loadingState) { Invoke-SafeTweak "NumLock on Startup -> ON"  { Set-Reg "Registry::HKU\.DEFAULT\Control Panel\Keyboard" "InitialKeyboardIndicators" "2" "String" } } })
 $TglNumLock.Add_Unchecked({ if (-not $script:loadingState) { Invoke-SafeTweak "NumLock on Startup -> OFF" { Set-Reg "Registry::HKU\.DEFAULT\Control Panel\Keyboard" "InitialKeyboardIndicators" "0" "String" } } })
@@ -2868,7 +3383,7 @@ $CmbMPO.Add_SelectionChanged({
     }
 })
 
-# Planos de Energia com Backup do GUID Anterior e Verificação de SKU
+# Planos de Energia
 $BtnUltEnable.Add_Click({
     Invoke-SafeTweak "Plano Desempenho Máximo (Ultimate)" {
         $curScheme = (powercfg /getactivescheme)
@@ -2900,29 +3415,32 @@ $BtnUltDisable.Add_Click({
     }
 })
 
-# Aba Advanced
+# Aba Advanced (Windows Update com Backup + WaaSMedicSvc)
 $BtnDisableWinUpdate.Add_Click({
-    Invoke-SafeTweak "Desativar Windows Update" {
-        @("wuauserv", "UsoSvc") | ForEach-Object { [void](Set-ServiceStartModeSafe $_ 4) }
+    Invoke-SafeTweak "Desativar Windows Update (wuauserv, UsoSvc, WaaSMedicSvc)" {
+        Backup-CoreServicesState @("wuauserv", "UsoSvc", "WaaSMedicSvc")
+        @("wuauserv", "UsoSvc", "WaaSMedicSvc") | ForEach-Object { [void](Set-ServiceStartModeSafe $_ 4) }
         Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" "NoAutoUpdate" 1
     }
     $script:WinUpdateDisabledCache = ((Get-ServiceStartModeFast "wuauserv") -eq 4)
     $StatusWinUpdateCard.Foreground = if ($script:WinUpdateDisabledCache) { "#F87171" } else { "#4ADE80" }
     Refresh-CachedStatusLabels
 })
+
 $BtnRestoreWinUpdate.Add_Click({
     Invoke-SafeTweak "Restaurar Windows Update" {
-        @("wuauserv", "UsoSvc") | ForEach-Object { [void](Set-ServiceStartModeSafe $_ 3); Start-Service -Name $_ -ErrorAction SilentlyContinue }
-        Remove-RegKeySafe "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate"
+        Restore-CoreServicesState @("wuauserv", "UsoSvc", "WaaSMedicSvc")
+        Remove-RegValueSafe "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" "NoAutoUpdate"
     }
     $script:WinUpdateDisabledCache = ((Get-ServiceStartModeFast "wuauserv") -eq 4)
     $StatusWinUpdateCard.Foreground = if ($script:WinUpdateDisabledCache) { "#F87171" } else { "#4ADE80" }
     Refresh-CachedStatusLabels
 })
+
 $BtnAdvFlushNet.Add_Click({ Invoke-SafeTweak "Reset de Rede e Flush DNS" { ipconfig /flushdns | Out-Null; netsh winsock reset | Out-Null; netsh int ip reset | Out-Null } })
 $BtnAdvCleanCache.Add_Click({ Invoke-SafeTweak "Limpeza de Pastas Temp e Prefetch" { [BetterTitus.FastCleaner]::CleanPattern(@("$userTempPath\*", "$env:windir\Temp\*", "$env:windir\Prefetch\*")) } })
 
-# Presets Seguros (Respeitando Filtro de Busca Visible)
+# Presets Seguros
 $BtnPresetClr.Add_Click({
     foreach ($c in $AllLeftChecks) { if ($c.Visibility -eq 'Visible') { $c.IsChecked = $false } }
     Write-BTLog "Seleção visível limpa." "INFO"
@@ -2944,16 +3462,18 @@ $BtnPresetAdv.Add_Click({
     foreach ($c in $SafeLeftChecks) { if ($c.Visibility -eq 'Visible') { $c.IsChecked = $true } }
     Write-BTLog "Preset 'Advanced' selecionado (Proteções de Segurança mantidas fora por segurança)." "INFO"
 })
-$BtnSelectInstalled.Add_Click({ Sync-SystemState; Write-BTLog "Estado real do Windows verificado e sincronizado." "OK" })
+$BtnSelectInstalled.Add_Click({
+    Sync-SystemStateAsync { Write-BTLog "Estado real do Windows verificado e sincronizado." "OK" }
+})
 
 # ==============================================================================
-# FUNÇÃO CENTRALIZADA DE REVERSÃO LIMPA POR NOME DE CHECKBOX
+# REVERSÃO INDIVIDUAL LIMPA (PRESERVANDO POLÍTICAS E BACKUPS ORIGINAIS)
 # ==============================================================================
 function Invoke-RevertSingleTweak ([string]$ChkName) {
     switch ($ChkName) {
         "ChkActivity"        { Invoke-SafeTweak "Reverter Histórico de Atividades" { Remove-RegValueSafe "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" "EnableActivityFeed"; Remove-RegValueSafe "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" "PublishUserActivities"; Remove-RegValueSafe "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" "UploadUserActivities" } }
         "ChkConsumer"        { Invoke-SafeTweak "Reverter ConsumerFeatures" { Remove-RegValueSafe "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent" "DisableWindowsConsumerFeatures"; Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" "SilentInstalledAppsEnabled" 1 } }
-        "ChkDelivery"        { Invoke-SafeTweak "Reverter Delivery Optimization" { Remove-RegValueSafe "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimization\Config" "DODownloadMode"; Remove-RegKeySafe "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization" } }
+        "ChkDelivery"        { Invoke-SafeTweak "Reverter Delivery Optimization" { Remove-RegValueSafe "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimization\Config" "DODownloadMode"; Remove-RegValueSafe "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization" "DODownloadMode" } }
         "ChkEndTask"         { Invoke-SafeTweak "Reverter End Task na Barra" { Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced\TaskbarDeveloperSettings" "TaskbarEndTask" 0 } }
         "ChkFolderDisc"      { Invoke-SafeTweak "Reverter Folder Discovery" { Remove-RegValueSafe "HKCU:\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\Bags\AllFolders\Shell" "FolderType" } }
         "ChkHibernation"     { Invoke-SafeTweak "Reverter Hibernação" { powercfg.exe /hibernate on; Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\Power" "HibernateEnabled" 1 } }
@@ -2962,7 +3482,7 @@ function Invoke-RevertSingleTweak ([string]$ChkName) {
         "ChkStoreSearch"     { Invoke-SafeTweak "Reverter Store Search" { Remove-RegValueSafe "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer" "NoUseStoreOpenWith" } }
         "ChkDeviceCompanion" { Invoke-SafeTweak "Reverter Device Companion Apps" { Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Device Metadata" "PreventDeviceMetadataFromNetwork" 0 } }
         "ChkServicesMan"     {
-            Invoke-SafeTweak "Reverter Serviços" {
+            Invoke-SafeTweak "Reverter Serviços Secundários" {
                 if (Test-Path $script:SvcBackup) {
                     $bkp = Get-Content $script:SvcBackup -Raw | ConvertFrom-Json
                     foreach ($entry in $bkp) {
@@ -2972,20 +3492,60 @@ function Invoke-RevertSingleTweak ([string]$ChkName) {
                     Remove-Item $script:SvcBackup -Force -ErrorAction SilentlyContinue
                 } else {
                     foreach ($svc in $script:SafeManualServices) {
-                        if ((Get-ServiceStartModeFast $svc) -ne -1) { [void](Set-ServiceStartModeSafe $svc 2) }
+                        if ((Get-ServiceStartModeFast $svc) -ne -1) { [void](Set-ServiceStartModeSafe $svc 3) }
                     }
                 }
             }
         }
-        "ChkTelemetry"       { Invoke-SafeTweak "Reverter Telemetria" { Remove-RegValueSafe "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection" "AllowTelemetry"; Remove-RegValueSafe "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\DataCollection" "AllowTelemetry"; [void](Set-ServiceStartModeSafe "DiagTrack" 2); [void](Set-ServiceStartModeSafe "dmwappushservice" 3) } }
-        "ChkWidgets"         { Invoke-SafeTweak "Reverter Widgets" { Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" "TaskbarDa" 1; Remove-RegKeySafe "HKLM:\SOFTWARE\Policies\Microsoft\Dsh" } }
+        "ChkTelemetry"       {
+            Invoke-SafeTweak "Reverter Telemetria" {
+                Remove-RegValueSafe "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection" "AllowTelemetry"
+                Remove-RegValueSafe "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\DataCollection" "AllowTelemetry"
+                Restore-CoreServicesState @("DiagTrack", "dmwappushservice")
+            }
+        }
+        "ChkWidgets"         {
+            Invoke-SafeTweak "Reverter Widgets" {
+                Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" "TaskbarDa" 1
+                Remove-RegValueSafe "HKLM:\SOFTWARE\Policies\Microsoft\Dsh" "AllowNewsAndInterests"
+            }
+        }
         "ChkWPBT"            { Invoke-SafeTweak "Reverter WPBT" { Remove-RegValueSafe "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager" "DisableWpbtExecution" } }
-        "ChkSearchIdx"       { Invoke-SafeTweak "Reverter Windows Search" { [void](Set-ServiceStartModeSafe "WSearch" 2); Start-Service "WSearch" -ErrorAction SilentlyContinue } }
+        "ChkSearchIdx"       {
+            Invoke-SafeTweak "Reverter Windows Search" {
+                Restore-CoreServicesState @("WSearch")
+            }
+        }
         "ChkBgApps"          { Invoke-SafeTweak "Reverter Background Apps" { Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications" "GlobalUserDisabled" 0 } }
-        "ChkOptTasks"        { Invoke-SafeTweak "Reverter Tarefas de Telemetria" { foreach ($t in $script:OptionalScheduledTasks) { $p = Split-Path $t -Parent; $n = Split-Path $t -Leaf; Enable-ScheduledTask -TaskPath "$p\" -TaskName $n -ErrorAction SilentlyContinue | Out-Null } } }
+        "ChkOptTasks"        {
+            Invoke-SafeTweak "Reverter Tarefas de Telemetria" {
+                $savedTasks = @{}
+                if (Test-Path $script:TasksBackup) {
+                    try {
+                        $loaded = Get-Content $script:TasksBackup -Raw | ConvertFrom-Json
+                        foreach ($p in $loaded.PSObject.Properties) { $savedTasks[$p.Name] = [bool]$p.Value }
+                    } catch {}
+                    Remove-Item $script:TasksBackup -Force -ErrorAction SilentlyContinue
+                }
+                foreach ($t in $script:OptionalScheduledTasks) {
+                    $shouldEnable = if ($savedTasks.ContainsKey($t)) { $savedTasks[$t] } else { $true }
+                    if ($shouldEnable) {
+                        $p = Split-Path $t -Parent; $n = Split-Path $t -Leaf
+                        Enable-ScheduledTask -TaskPath "$p\" -TaskName $n -ErrorAction SilentlyContinue | Out-Null
+                    }
+                }
+            }
+        }
         "ChkReservedStorage" { Invoke-SafeTweak "Reverter Armazenamento Reservado" { Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\ReserveManager" "ShippedWithReserves" 1; if (Get-Command Set-WindowsReservedStorageState -ErrorAction SilentlyContinue) { Set-WindowsReservedStorageState -State Enabled -ErrorAction SilentlyContinue } } }
         "ChkExplorerGallery" { Invoke-SafeTweak "Reverter Galeria/Início Explorer" { Set-Reg "HKCU:\Software\Classes\CLSID\{e88865ea-0e1c-4e20-9aa6-edcd0212c87c}" "System.IsPinnedToNameSpaceTree" 1; Set-Reg "HKCU:\Software\Classes\CLSID\{f874310e-b6b7-47dc-bc84-b9e6b38f5903}" "System.IsPinnedToNameSpaceTree" 1 } }
-        "ChkGameDVR"         { Invoke-SafeTweak "Reverter GameDVR" { Set-Reg "HKCU:\System\GameConfigStore" "GameDVR_Enabled" 1; Remove-RegValueSafe "HKCU:\System\GameConfigStore" "GameDVR_FSEBehaviorMode"; Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR" "AppCaptureEnabled" 1; Remove-RegKeySafe "HKLM:\SOFTWARE\Policies\Microsoft\Windows\GameDVR" } }
+        "ChkGameDVR"         {
+            Invoke-SafeTweak "Reverter GameDVR" {
+                Set-Reg "HKCU:\System\GameConfigStore" "GameDVR_Enabled" 1
+                Remove-RegValueSafe "HKCU:\System\GameConfigStore" "GameDVR_FSEBehaviorMode"
+                Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR" "AppCaptureEnabled" 1
+                Remove-RegValueSafe "HKLM:\SOFTWARE\Policies\Microsoft\Windows\GameDVR" "AllowGameDVR"
+            }
+        }
         "ChkIPv4Pref"        {
             Invoke-SafeTweak "Reverter IPv4 Preferencial" {
                 if (Test-Path $script:Ipv6Backup) {
@@ -2997,18 +3557,50 @@ function Invoke-RevertSingleTweak ([string]$ChkName) {
                 }
             }
         }
-        "ChkTeredo"          { Invoke-SafeTweak "Reverter Teredo" { netsh interface teredo set state default | Out-Null; Remove-RegValueSafe "HKLM:\SOFTWARE\Policies\Microsoft\Windows\TCPIP\v6Transition" "Teredo_State" } }
+        "ChkTeredo"          {
+            Invoke-SafeTweak "Reverter Teredo" {
+                & netsh.exe interface teredo set state default | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw "netsh retornou código de saída $LASTEXITCODE" }
+                Remove-RegValueSafe "HKLM:\SOFTWARE\Policies\Microsoft\Windows\TCPIP\v6Transition" "Teredo_State"
+            }
+        }
         "ChkMenuDelay"       { Invoke-SafeTweak "Reverter MenuShowDelay (400ms)" { Set-Reg "HKCU:\Control Panel\Desktop" "MenuShowDelay" "400" "String" } }
-        "ChkEdgeDebloat"     { Invoke-SafeTweak "Reverter Edge Background (Remover Política)" { Remove-RegKeySafe "HKLM:\SOFTWARE\Policies\Microsoft\Edge" } }
+        "ChkEdgeDebloat"     {
+            Invoke-SafeTweak "Reverter Edge Background (Remover Políticas Criadas)" {
+                Remove-RegValueSafe "HKLM:\SOFTWARE\Policies\Microsoft\Edge" "BackgroundModeEnabled"
+                Remove-RegValueSafe "HKLM:\SOFTWARE\Policies\Microsoft\Edge" "StartupBoostEnabled"
+            }
+        }
         "ChkNetThrottle"     { Invoke-SafeTweak "Reverter Network Throttling" { Remove-RegValueSafe "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" "NetworkThrottlingIndex"; Remove-RegValueSafe "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" "SystemResponsiveness" } }
         "ChkPowerThrottle"   { Invoke-SafeTweak "Reverter Power Throttling" { Remove-RegValueSafe "HKLM:\SYSTEM\CurrentControlSet\Control\Power\PowerThrottling" "PowerThrottlingOff" } }
-        "ChkClassicContext"  { Invoke-SafeTweak "Reverter Menu Clássico Win 11" { Remove-RegKeySafe "HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}" } }
+        "ChkClassicContext"  { Invoke-SafeTweak "Reverter Menu Clássico Win 11" { Remove-RegValueSafe "HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32" "(default)"; Remove-Item (Resolve-RegPath "HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}") -Recurse -Force -ErrorAction SilentlyContinue } }
         "ChkStorageSense"    { Invoke-SafeTweak "Reverter Storage Sense" { Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\StorageSense\Parameters\StoragePolicy" "01" 1 } }
-        "ChkSvcHost"         { Invoke-SafeTweak "Reverter SvcHost Split" { Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control" "SvcHostSplitThresholdInKB" 380000 } }
+        "ChkSvcHost"         { Invoke-SafeTweak "Reverter SvcHost Split (Padrão 3670016 KB)" { Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control" "SvcHostSplitThresholdInKB" 3670016 } }
         "ChkUsbSuspend"      { Invoke-SafeTweak "Reverter USB Selective Suspend" { Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Services\USB" "DisableSelectiveSuspend" 0 } }
         "ChkBestPerf"        { Invoke-SafeTweak "Reverter Visual Effects" { Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" "VisualFXSetting" 0 } }
-        "ChkWinAI"           { Invoke-SafeTweak "Reverter Windows AI (Remover Políticas)" { Remove-RegKeySafe "HKCU:\Software\Policies\Microsoft\Windows\WindowsCopilot"; Remove-RegKeySafe "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot"; Remove-RegKeySafe "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsAI"; Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" "ShowCopilotButton" 1 } }
-        "ChkBitLocker"       { Invoke-SafeTweak "Reverter BitLocker (Reativar)" { if (Get-Command Enable-BitLocker -ErrorAction SilentlyContinue) { Enable-BitLocker -MountPoint $env:SystemDrive -RecoveryPasswordProtector -ErrorAction SilentlyContinue | Out-Null } else { [void](Set-ServiceStartModeSafe "BDESVC" 3) } } }
+        "ChkWinAI"           {
+            Invoke-SafeTweak "Reverter Windows AI (Remover Valores Criados)" {
+                Remove-RegValueSafe "HKCU:\Software\Policies\Microsoft\Windows\WindowsCopilot" "TurnOffWindowsCopilot"
+                Remove-RegValueSafe "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot" "TurnOffWindowsCopilot"
+                Remove-RegValueSafe "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsAI" "DisableAIDataAnalysis"
+                Remove-RegValueSafe "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsAI" "TurnOffSavingSnapshots"
+                Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" "ShowCopilotButton" 1
+            }
+        }
+        "ChkBitLocker"       {
+            Invoke-SafeTweak "Reverter BitLocker (Retomar Proteção Existente)" {
+                if (Get-Command Resume-BitLocker -ErrorAction SilentlyContinue) {
+                    $vol = Get-BitLockerVolume -MountPoint $env:SystemDrive -ErrorAction SilentlyContinue
+                    if ($null -ne $vol -and $vol.KeyProtector.Count -gt 0) {
+                        Resume-BitLocker -MountPoint $env:SystemDrive -ErrorAction Stop | Out-Null
+                    } else {
+                        Write-BTLog "BitLocker sem protetor de chave salvo: ative manualmente via Painel de Controle para gerar e salvar sua chave de recuperação." "WARN"
+                    }
+                } else {
+                    [void](Set-ServiceStartModeSafe "BDESVC" 3)
+                }
+            }
+        }
         "ChkHVCI"            {
             Invoke-SafeTweak "Reativar HVCI / Memory Integrity (Reinicie o PC)" {
                 Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" "Enabled" 1
@@ -3024,7 +3616,7 @@ function Invoke-RevertSingleTweak ([string]$ChkName) {
 }
 
 # ==============================================================================
-# APLICAR OTIMIZAÇÕES (ORDEM SEGURA SEM CONFLITOS + PROMPT DE REBOOT)
+# APLICAR OTIMIZAÇÕES NA ORDEM SEGURA
 # ==============================================================================
 $BtnRunTweaks.Add_Click({
     $secSelected = @()
@@ -3035,9 +3627,9 @@ $BtnRunTweaks.Add_Click({
     $applySecurity = $true
     if ($secSelected.Count -gt 0) {
         $warnText = if ($script:Lang -eq "PT") {
-            "CONFIRMAÇÃO DE SEGURANÇA OBRIGATÓRIA:`n`nVocê selecionou alterações que reduzem camadas de proteção do Windows para ganhar desempenho:`n`n$($secSelected -join "`n")`n`nTodas podem ser revertidas desmarcando a opção ou pelo botão 'Reverter Selecionadas'. Deseja prosseguir?"
+            "CONFIRMAÇÃO DE SEGURANÇA OBRIGATÓRIA:`n`nVocê selecionou alterações que reduzem camadas de proteção do Windows para ganhar desempenho:`n`n$($secSelected -join "`n")`n`nDeseja prosseguir?"
         } else {
-            "EXPLICIT SECURITY CONFIRMATION REQUIRED:`n`nYou selected optimizations that reduce Windows security layers for performance:`n`n$($secSelected -join "`n")`n`nAll changes are reversible by unchecking or clicking 'Revert Selected Tweaks'. Proceed?"
+            "EXPLICIT SECURITY CONFIRMATION REQUIRED:`n`nYou selected optimizations that reduce Windows security layers for performance:`n`n$($secSelected -join "`n")`n`nProceed?"
         }
         $ans = [System.Windows.MessageBox]::Show($warnText, "BetterTitus - Security Confirmation", [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Warning)
         if ($ans -ne [System.Windows.MessageBoxResult]::Yes) {
@@ -3046,194 +3638,197 @@ $BtnRunTweaks.Add_Click({
         }
     }
 
-    # Confirmação dupla para BitLocker
     $runBitlocker = $false
     if ($applySecurity -and $ChkBitLocker.IsChecked -and -not $script:AppliedSecurityCache.BitLocker) {
         $blWarn = if ($script:Lang -eq "PT") {
-            "CONFIRMAÇÃO DUPLA — BITLOCKER:`n`nA descriptografia da unidade $env:SystemDrive será iniciada em segundo plano (manage-bde -off) e pode levar várias horas dependendo do tamanho do SSD.`n`nTem certeza absoluta que deseja iniciar a descriptografia?"
+            "CONFIRMAÇÃO DUPLA — BITLOCKER:`n`nA descriptografia da unidade $env:SystemDrive pode demorar vários minutos ou horas dependendo do tamanho e tipo do SSD/HD.`n`nTem certeza absoluta que deseja desativar o BitLocker?"
         } else {
-            "DOUBLE CONFIRMATION — BITLOCKER:`n`nDecryption of drive $env:SystemDrive will start in the background and may take several hours depending on drive size.`n`nAre you absolutely sure you want to start decryption?"
+            "DOUBLE CONFIRMATION — BITLOCKER:`n`nDecrypting system drive $env:SystemDrive may take several minutes or hours depending on drive size and speed.`n`nAre you sure you want to disable BitLocker?"
         }
-        if ([System.Windows.MessageBox]::Show($blWarn, "BetterTitus - BitLocker Double Confirmation", [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Exclamation) -eq [System.Windows.MessageBoxResult]::Yes) {
+        if ([System.Windows.MessageBox]::Show($blWarn, "BetterTitus - BitLocker Warning", [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Stop) -eq [System.Windows.MessageBoxResult]::Yes) {
             $runBitlocker = $true
         }
     }
 
-    Write-BTLog "=== INICIANDO APLICAÇÃO NA ORDEM SEGURA ===" "HEADER"
-    $needsReboot = $false
-    $needsShellNotify = $false
+    Write-BTLog "=== APLICANDO OTIMIZAÇÕES SELECIONADAS ===" "HEADER"
 
-    # 1. Reverter itens desmarcados que estavam ativos
+    # 1. REVERSÃO AUTOMÁTICA DOS ITENS DESMARCADOS PELO USUÁRIO
+    $uncheckedRevertList = @()
     foreach ($chk in $AllLeftChecks) {
-        $wasActive = ($script:InitialTweakState.ContainsKey($chk.Name) -and $script:InitialTweakState[$chk.Name] -eq $true)
-        if ($wasActive -and -not $chk.IsChecked) {
-            if ($chk.Name -in @("ChkHVCI", "ChkCpuMitigations")) { $needsReboot = $true }
-            Invoke-RevertSingleTweak $chk.Name
+        if (-not $chk.IsChecked -and $script:InitialTweakState[$chk.Name] -eq $true) {
+            $uncheckedRevertList += $chk.Name
+        }
+    }
+    if ($uncheckedRevertList.Count -gt 0) {
+        Write-BTLog "Detectados $($uncheckedRevertList.Count) itens desmarcados -> Revertendo..." "INFO"
+        foreach ($itemName in $uncheckedRevertList) {
+            Invoke-RevertSingleTweak $itemName
         }
     }
 
-    # 2. Armazenamento e Energia Base (Hibernation -> ReservedStorage -> PowerThrottle -> UsbSuspend -> SvcHost -> MemComp)
-    if ($ChkHibernation.IsChecked)     { Invoke-SafeTweak "Hibernação (Desativar)" { powercfg.exe /hibernate off; Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\Power" "HibernateEnabled" 0 } }
-    if ($ChkReservedStorage.IsChecked) { Invoke-SafeTweak "Armazenamento Reservado" { Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\ReserveManager" "ShippedWithReserves" 0; if (Get-Command Set-WindowsReservedStorageState -ErrorAction SilentlyContinue) { Set-WindowsReservedStorageState -State Disabled -ErrorAction SilentlyContinue } } }
-    if ($ChkPowerThrottle.IsChecked)   { Invoke-SafeTweak "Power Throttling" { Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\Power\PowerThrottling" "PowerThrottlingOff" 1 } }
-    if ($ChkUsbSuspend.IsChecked)      { Invoke-SafeTweak "USB Selective Suspend" { Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Services\USB" "DisableSelectiveSuspend" 1 } }
-    if ($ChkSvcHost.IsChecked -and $script:HwInfo.RamKB -gt 0) {
-        Invoke-SafeTweak "SvcHost Split ($($script:HwInfo.RamKB) KB)" { Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control" "SvcHostSplitThresholdInKB" ([int]$script:HwInfo.RamKB) }
-    }
+    # 2. APLICAR OS ITENS MARCADOS
+    if ($ChkActivity.IsChecked)        { Invoke-SafeTweak "Desativar Histórico de Atividades" { Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" "EnableActivityFeed" 0; Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" "PublishUserActivities" 0; Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" "UploadUserActivities" 0 } }
+    if ($ChkConsumer.IsChecked)        { Invoke-SafeTweak "Desativar ConsumerFeatures" { Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent" "DisableWindowsConsumerFeatures" 1; Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" "SilentInstalledAppsEnabled" 0 } }
+    if ($ChkDelivery.IsChecked)        { Invoke-SafeTweak "Desativar Delivery Optimization P2P" { Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimization\Config" "DODownloadMode" 0; Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization" "DODownloadMode" 0 } }
+    if ($ChkEndTask.IsChecked)         { Invoke-SafeTweak "Ativar End Task na Barra" { Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced\TaskbarDeveloperSettings" "TaskbarEndTask" 1 } }
+    if ($ChkFolderDisc.IsChecked)      { Invoke-SafeTweak "Desativar Folder Discovery" { Set-Reg "HKCU:\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\Bags\AllFolders\Shell" "FolderType" "NotSpecified" "String" } }
+    if ($ChkHibernation.IsChecked)     { Invoke-SafeTweak "Desativar Hibernação" { powercfg.exe /hibernate off; Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\Power" "HibernateEnabled" 0 } }
+    if ($ChkLocation.IsChecked)        { Invoke-SafeTweak "Desativar Localização" { Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location" "Value" "Deny" "String" } }
     if ($ChkMemCompression.IsChecked)  { Invoke-SafeTweak "Desativar Compactação de Memória" { if (Get-Command Disable-MMAgent -ErrorAction SilentlyContinue) { Disable-MMAgent -MemoryCompression -ErrorAction Stop } } }
+    if ($ChkStoreSearch.IsChecked)     { Invoke-SafeTweak "Desativar Store Search" { Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer" "NoUseStoreOpenWith" 1 } }
+    if ($ChkDeviceCompanion.IsChecked) { Invoke-SafeTweak "Impedir Device Companion Apps" { Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Device Metadata" "PreventDeviceMetadataFromNetwork" 1 } }
 
-    # 3. Rede (IPv4Pref com backup -> Teredo isolado -> NetThrottle -> Delivery -> DNS)
+    if ($ChkServicesMan.IsChecked) {
+        Invoke-SafeTweak "Definir Serviços Secundários como Manual (com Backup)" {
+            if (-not (Test-Path $script:SvcBackup)) {
+                $bkpData = @()
+                foreach ($svc in $script:SafeManualServices) {
+                    $st = Get-ServiceStartModeFast $svc
+                    if ($st -in @(2, 3, 4)) { $bkpData += [PSCustomObject]@{ Name = $svc; Start = $st } }
+                }
+                if ($bkpData.Count -gt 0) { $bkpData | ConvertTo-Json -Depth 2 | Set-Content -Path $script:SvcBackup -Encoding UTF8 -Force }
+            }
+            foreach ($svc in $script:SafeManualServices) {
+                $cur = Get-ServiceStartModeFast $svc
+                if ($cur -ne -1 -and $cur -ne 4) { [void](Set-ServiceStartModeSafe $svc 3) }
+            }
+        }
+    }
+
+    if ($ChkTelemetry.IsChecked) {
+        Invoke-SafeTweak "Desativar Telemetria (com Backup DiagTrack)" {
+            Backup-CoreServicesState @("DiagTrack", "dmwappushservice")
+            Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection" "AllowTelemetry" 0
+            Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\DataCollection" "AllowTelemetry" 0
+            [void](Set-ServiceStartModeSafe "DiagTrack" 4)
+            [void](Set-ServiceStartModeSafe "dmwappushservice" 4)
+        }
+    }
+
+    if ($ChkWidgets.IsChecked) { Invoke-SafeTweak "Remover Widgets" { Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" "TaskbarDa" 0; Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Dsh" "AllowNewsAndInterests" 0 } }
+    if ($ChkWPBT.IsChecked)    { Invoke-SafeTweak "Desativar WPBT" { Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager" "DisableWpbtExecution" 1 } }
+    if ($ChkSearchIdx.IsChecked) {
+        Invoke-SafeTweak "Desativar Windows Search (com Backup WSearch)" {
+            Backup-CoreServicesState @("WSearch")
+            [void](Set-ServiceStartModeSafe "WSearch" 4)
+        }
+    }
+
+    if ($ChkBgApps.IsChecked) { Invoke-SafeTweak "Desativar Background Apps" { Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications" "GlobalUserDisabled" 1 } }
+    if ($ChkOptTasks.IsChecked) {
+        Invoke-SafeTweak "Desativar Tarefas de Telemetria (com Backup Individual)" {
+            if (-not (Test-Path $script:TasksBackup)) {
+                $tStates = @{}
+                foreach ($t in $script:OptionalScheduledTasks) {
+                    $p = Split-Path $t -Parent; $n = Split-Path $t -Leaf
+                    $taskObj = Get-ScheduledTask -TaskPath "$p\" -TaskName $n -ErrorAction SilentlyContinue
+                    if ($null -ne $taskObj) {
+                        $tStates[$t] = ($taskObj.State -ne 'Disabled')
+                    }
+                }
+                if ($tStates.Count -gt 0) {
+                    $tStates | ConvertTo-Json -Depth 2 | Set-Content -Path $script:TasksBackup -Encoding UTF8 -Force
+                }
+            }
+            foreach ($t in $script:OptionalScheduledTasks) {
+                $p = Split-Path $t -Parent; $n = Split-Path $t -Leaf
+                Disable-ScheduledTask -TaskPath "$p\" -TaskName $n -ErrorAction SilentlyContinue | Out-Null
+            }
+        }
+    }
+    if ($ChkReservedStorage.IsChecked) { Invoke-SafeTweak "Desativar Armazenamento Reservado" { Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\ReserveManager" "ShippedWithReserves" 0; if (Get-Command Set-WindowsReservedStorageState -ErrorAction SilentlyContinue) { Set-WindowsReservedStorageState -State Disabled -ErrorAction SilentlyContinue } } }
+    if ($ChkExplorerGallery.IsChecked) { Invoke-SafeTweak "Ocultar Galeria/Início Explorer" { Set-Reg "HKCU:\Software\Classes\CLSID\{e88865ea-0e1c-4e20-9aa6-edcd0212c87c}" "System.IsPinnedToNameSpaceTree" 0; Set-Reg "HKCU:\Software\Classes\CLSID\{f874310e-b6b7-47dc-bc84-b9e6b38f5903}" "System.IsPinnedToNameSpaceTree" 0 } }
+    if ($ChkGameDVR.IsChecked)         { Invoke-SafeTweak "Desativar GameDVR" { Set-Reg "HKCU:\System\GameConfigStore" "GameDVR_Enabled" 0; Set-Reg "HKCU:\System\GameConfigStore" "GameDVR_FSEBehaviorMode" 2; Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR" "AppCaptureEnabled" 0; Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\GameDVR" "AllowGameDVR" 0 } }
     if ($ChkIPv4Pref.IsChecked) {
-        Invoke-SafeTweak "IPv4 Preferencial (Backup IPv6 salvo)" {
-            $curIpv6 = Get-Reg "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters" "DisabledComponents" $null
-            if ($null -ne $curIpv6 -and -not (Test-Path $script:Ipv6Backup)) {
-                $curIpv6.ToString() | Set-Content -Path $script:Ipv6Backup -Encoding UTF8 -Force
+        Invoke-SafeTweak "Definir IPv4 como Preferencial (com Backup)" {
+            if (-not (Test-Path $script:Ipv6Backup)) {
+                $curDc = Get-Reg "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters" "DisabledComponents" 0
+                [string]$curDc | Set-Content -Path $script:Ipv6Backup -Encoding UTF8 -Force
             }
             Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters" "DisabledComponents" 32
         }
     }
-    if ($ChkTeredo.IsChecked)          { Invoke-SafeTweak "Desativar Teredo" { netsh interface teredo set state disabled | Out-Null; Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\TCPIP\v6Transition" "Teredo_State" "Disabled" "String" } }
-    if ($ChkNetThrottle.IsChecked)     { Invoke-SafeTweak "Network Throttling" { Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" "NetworkThrottlingIndex" 0xffffffff; Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" "SystemResponsiveness" 0 } }
-    if ($ChkDelivery.IsChecked)        { Invoke-SafeTweak "Delivery Optimization" { Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimization\Config" "DODownloadMode" 0; Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization" "DODownloadMode" 0 } }
-
-    if ($CmbDNS.SelectedIndex -eq 0) {
-        Invoke-SafeTweak "DNS -> Restaurar DHCP Automático" {
-            Get-NetAdapter | Where-Object Status -eq "Up" | ForEach-Object {
-                Set-DnsClientServerAddress -InterfaceIndex $_.InterfaceIndex -ResetServerAddresses -ErrorAction SilentlyContinue
-            }
-        }
-    } else {
-        $dnsMap = @{ 1 = @("1.1.1.1","1.0.0.1"); 2 = @("8.8.8.8","8.8.4.4"); 3 = @("9.9.9.9","149.112.112.112") }
-        $servers = $dnsMap[$CmbDNS.SelectedIndex]
-        Invoke-SafeTweak "DNS ($($servers -join ', '))" {
-            Get-NetAdapter | Where-Object Status -eq "Up" | ForEach-Object {
-                Set-DnsClientServerAddress -InterfaceIndex $_.InterfaceIndex -ServerAddresses $servers -ErrorAction SilentlyContinue
-            }
+    if ($ChkTeredo.IsChecked) {
+        Invoke-SafeTweak "Desativar Teredo" {
+            & netsh.exe interface teredo set state disabled | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "netsh retornou código de saída $LASTEXITCODE" }
+            Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\TCPIP\v6Transition" "Teredo_State" "Disabled" "String"
         }
     }
+    if ($ChkMenuDelay.IsChecked)       { Invoke-SafeTweak "MenuShowDelay = 0ms" { Set-Reg "HKCU:\Control Panel\Desktop" "MenuShowDelay" "0" "String" } }
+    if ($ChkEdgeDebloat.IsChecked)     { Invoke-SafeTweak "Desativar Processos Edge Background" { Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Edge" "BackgroundModeEnabled" 0; Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Edge" "StartupBoostEnabled" 0 } }
+    if ($ChkNetThrottle.IsChecked)     { Invoke-SafeTweak "Otimizar Network Throttling" { Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" "NetworkThrottlingIndex" 0xffffffff; Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" "SystemResponsiveness" 0 } }
+    if ($ChkPowerThrottle.IsChecked)   { Invoke-SafeTweak "Desativar Power Throttling" { Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\Power\PowerThrottling" "PowerThrottlingOff" 1 } }
+    if ($ChkClassicContext.IsChecked)  { Invoke-SafeTweak "Ativar Menu Clássico Win 11" { Set-Reg "HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32" "(default)" "" "String" } }
+    if ($ChkStorageSense.IsChecked)    { Invoke-SafeTweak "Desativar Storage Sense" { Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\StorageSense\Parameters\StoragePolicy" "01" 0 } }
+    if ($ChkSvcHost.IsChecked -and $script:HwInfo.RamKB -gt 0) { Invoke-SafeTweak "Ajustar SvcHost Split ($($script:HwInfo.RamKB) KB)" { Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control" "SvcHostSplitThresholdInKB" $script:HwInfo.RamKB } }
+    if ($ChkUsbSuspend.IsChecked)      { Invoke-SafeTweak "Desativar USB Selective Suspend" { Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Services\USB" "DisableSelectiveSuspend" 1 } }
+    if ($ChkBestPerf.IsChecked)        { Invoke-SafeTweak "Visual Effects -> Best Performance" { Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" "VisualFXSetting" 2 } }
+    if ($ChkWinAI.IsChecked)           { Invoke-SafeTweak "Desativar Windows AI (Copilot/Recall)" { Set-Reg "HKCU:\Software\Policies\Microsoft\Windows\WindowsCopilot" "TurnOffWindowsCopilot" 1; Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot" "TurnOffWindowsCopilot" 1; Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsAI" "DisableAIDataAnalysis" 1; Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsAI" "TurnOffSavingSnapshots" 1; Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" "ShowCopilotButton" 0 } }
 
-    # 4. Privacidade, Serviços e Tarefas
-    if ($ChkActivity.IsChecked)        { Invoke-SafeTweak "Histórico de Atividades" { Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" "EnableActivityFeed" 0; Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" "PublishUserActivities" 0; Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" "UploadUserActivities" 0 } }
-    if ($ChkConsumer.IsChecked)        { Invoke-SafeTweak "ConsumerFeatures" { Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent" "DisableWindowsConsumerFeatures" 1; Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" "SilentInstalledAppsEnabled" 0 } }
-    if ($ChkLocation.IsChecked)        { Invoke-SafeTweak "Localização" { Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location" "Value" "Deny" "String" } }
-    if ($ChkStoreSearch.IsChecked)     { Invoke-SafeTweak "Store Search" { Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer" "NoUseStoreOpenWith" 1 } }
-    if ($ChkDeviceCompanion.IsChecked) { Invoke-SafeTweak "Bloquear Device Companion Apps" { Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Device Metadata" "PreventDeviceMetadataFromNetwork" 1 } }
-    if ($ChkTelemetry.IsChecked)       { Invoke-SafeTweak "Telemetria" { Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection" "AllowTelemetry" 0; Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\DataCollection" "AllowTelemetry" 0; [void](Set-ServiceStartModeSafe "DiagTrack" 4); [void](Set-ServiceStartModeSafe "dmwappushservice" 4) } }
-    if ($ChkOptTasks.IsChecked)        { Invoke-SafeTweak "Tarefas Agendadas de Telemetria" { foreach ($t in $script:OptionalScheduledTasks) { $p = Split-Path $t -Parent; $n = Split-Path $t -Leaf; Disable-ScheduledTask -TaskPath "$p\" -TaskName $n -ErrorAction SilentlyContinue | Out-Null } } }
-    if ($ChkSearchIdx.IsChecked)       { Invoke-SafeTweak "Windows Search" { [void](Set-ServiceStartModeSafe "WSearch" 4) } }
-    if ($ChkServicesMan.IsChecked)     {
-        Invoke-SafeTweak "Serviços -> Manual" {
-            if (-not (Test-Path $script:SvcBackup)) {
-                $bkpList = @()
-                foreach ($svc in $script:SafeManualServices) {
-                    $cur = Get-ServiceStartModeFast $svc
-                    if ($cur -in @(2, 3, 4)) { $bkpList += [PSCustomObject]@{ Name = $svc; Start = $cur } }
-                }
-                if ($bkpList.Count -gt 0) { $bkpList | ConvertTo-Json -Depth 2 | Set-Content -Path $script:SvcBackup -Encoding UTF8 -Force }
-            }
-            foreach ($svc in $script:SafeManualServices) { $cur = Get-ServiceStartModeFast $svc; if ($cur -ne -1 -and $cur -lt 3) { [void](Set-ServiceStartModeSafe $svc 3) } }
-        }
-    }
-
-    # 5. Interface, Explorer e Gaming Geral
-    if ($ChkEndTask.IsChecked)         { Invoke-SafeTweak "End Task na Barra" { Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced\TaskbarDeveloperSettings" "TaskbarEndTask" 1 }; $needsShellNotify = $true }
-    if ($ChkFolderDisc.IsChecked)      { Invoke-SafeTweak "Folder Discovery" { Set-Reg "HKCU:\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\Bags\AllFolders\Shell" "FolderType" "NotSpecified" "String" }; $needsShellNotify = $true }
-    if ($ChkWidgets.IsChecked)         { Invoke-SafeTweak "Widgets (Win 10/11 22H2+)" { Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" "TaskbarDa" 0; Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Dsh" "AllowNewsAndInterests" 0 }; $needsShellNotify = $true }
-    if ($ChkWPBT.IsChecked)            { Invoke-SafeTweak "WPBT" { Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager" "DisableWpbtExecution" 1 } }
-    if ($ChkBgApps.IsChecked)          { Invoke-SafeTweak "Background Apps" { Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications" "GlobalUserDisabled" 1 } }
-    if ($ChkExplorerGallery.IsChecked) { Invoke-SafeTweak "Ocultar Galeria/Início Explorer" { Set-Reg "HKCU:\Software\Classes\CLSID\{e88865ea-0e1c-4e20-9aa6-edcd0212c87c}" "System.IsPinnedToNameSpaceTree" 0; Set-Reg "HKCU:\Software\Classes\CLSID\{f874310e-b6b7-47dc-bc84-b9e6b38f5903}" "System.IsPinnedToNameSpaceTree" 0 }; $needsShellNotify = $true }
-    if ($ChkGameDVR.IsChecked)         { Invoke-SafeTweak "GameDVR (Win 10/11 22H2+)" { Set-Reg "HKCU:\System\GameConfigStore" "GameDVR_Enabled" 0; Set-Reg "HKCU:\System\GameConfigStore" "GameDVR_FSEBehaviorMode" 2; Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR" "AppCaptureEnabled" 0; Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\GameDVR" "AllowGameDVR" 0 } }
-    if ($ChkMenuDelay.IsChecked)       { Invoke-SafeTweak "MenuShowDelay 0ms" { Set-Reg "HKCU:\Control Panel\Desktop" "MenuShowDelay" "0" "String" } }
-    if ($ChkEdgeDebloat.IsChecked)     { Invoke-SafeTweak "Edge Background" { Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Edge" "BackgroundModeEnabled" 0; Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Edge" "StartupBoostEnabled" 0 } }
-    if ($ChkClassicContext.IsChecked)  { Invoke-SafeTweak "Menu Clássico Win 11" { $k = Resolve-RegPath "HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32"; New-Item -Path $k -Value "" -Force | Out-Null }; $needsShellNotify = $true }
-    if ($ChkStorageSense.IsChecked)    { Invoke-SafeTweak "Storage Sense" { Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\StorageSense\Parameters\StoragePolicy" "01" 0 } }
-    if ($ChkBestPerf.IsChecked)        { Invoke-SafeTweak "Visual Effects" { Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" "VisualFXSetting" 2 }; $needsShellNotify = $true }
-    if ($ChkWinAI.IsChecked)           { Invoke-SafeTweak "Windows AI (Copilot & Recall)" { Set-Reg "HKCU:\Software\Policies\Microsoft\Windows\WindowsCopilot" "TurnOffWindowsCopilot" 1; Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot" "TurnOffWindowsCopilot" 1; Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsAI" "DisableAIDataAnalysis" 1; Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsAI" "TurnOffSavingSnapshots" 1; Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" "ShowCopilotButton" 0 }; $needsShellNotify = $true }
-
-    if ($needsShellNotify) {
-        [BetterTitus.NativeMethods]::BroadcastSettingsChange()
-    }
-
-    # 6. Segurança e Kernel (Por último + Prompt de Reboot)
     if ($runBitlocker) {
-        Invoke-SafeTweak "Iniciar Descriptografia BitLocker em Background ($env:SystemDrive)" {
-            Start-Process -FilePath "manage-bde.exe" -ArgumentList "-off $env:SystemDrive" -WindowStyle Hidden
-        }
-    }
-    if ($applySecurity) {
-        if ($ChkHVCI.IsChecked -and -not $script:AppliedSecurityCache.HVCI) {
-            Invoke-SafeTweak "Desativar HVCI / Memory Integrity (Requer Reinício)" {
-                Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" "Enabled" 0
-            } { (Get-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" "Enabled" 1) -eq 0 }
-            $needsReboot = $true
-        }
-        if ($ChkCpuMitigations.IsChecked -and -not $script:AppliedSecurityCache.Mitigations) {
-            Invoke-SafeTweak "Desativar Mitigações Spectre/Meltdown (Requer Reinício)" {
-                Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" "FeatureSettingsOverride" 3
-                Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" "FeatureSettingsOverrideMask" 3
+        Invoke-SafeTweak "Desativar BitLocker ($env:SystemDrive)" {
+            if (Get-Command Disable-BitLocker -ErrorAction SilentlyContinue) {
+                Disable-BitLocker -MountPoint $env:SystemDrive -ErrorAction Stop | Out-Null
+            } else {
+                & manage-bde.exe -off $env:SystemDrive | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw "manage-bde retornou código $LASTEXITCODE" }
             }
-            $needsReboot = $true
+        }
+    }
+    if ($applySecurity -and $ChkHVCI.IsChecked -and -not $script:AppliedSecurityCache.HVCI) {
+        Invoke-SafeTweak "Desativar HVCI / Memory Integrity (Requer Reinício)" { Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" "Enabled" 0 }
+    }
+    if ($applySecurity -and $ChkCpuMitigations.IsChecked -and -not $script:AppliedSecurityCache.Mitigations) {
+        Invoke-SafeTweak "Desativar Mitigações Spectre/Meltdown (Requer Reinício)" { Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" "FeatureSettingsOverride" 3; Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" "FeatureSettingsOverrideMask" 3 }
+    }
+
+    # DNS (Inclui adaptadores físicos/virtuais mesmo desconectados)
+    $dnsIdx = $CmbDNS.SelectedIndex
+    $adapters = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceDescription -notmatch 'Loopback|Pseudo' }
+    if ($dnsIdx -gt 0) {
+        $dnsAddrs = switch ($dnsIdx) { 1 { @("1.1.1.1","1.0.0.1") } 2 { @("8.8.8.8","8.8.4.4") } 3 { @("9.9.9.9","149.112.112.112") } }
+        Invoke-SafeTweak "Aplicar DNS ($($dnsAddrs -join ', '))" {
+            foreach ($nic in $adapters) { Set-DnsClientServerAddress -InterfaceIndex $nic.ifIndex -ServerAddresses $dnsAddrs -ErrorAction SilentlyContinue }
+            ipconfig /flushdns | Out-Null
+        }
+    } elseif ($dnsIdx -eq 0) {
+        Invoke-SafeTweak "Restaurar DNS Padrão (DHCP)" {
+            foreach ($nic in $adapters) { Set-DnsClientServerAddress -InterfaceIndex $nic.ifIndex -ResetServerAddresses -ErrorAction SilentlyContinue }
         }
     }
 
-    Sync-SystemState
-    Write-BTLog "=== PROCESSO CONCLUÍDO E SINCRONIZADO ===" "OK"
-
-    if ($needsReboot) {
-        $rbMsg = if ($script:Lang -eq "PT") {
-            "As alterações de HVCI / Mitigações de CPU exigem a reinicialização do Windows para entrar em vigor.`n`nDeseja reiniciar o computador agora?"
-        } else {
-            "Changes to HVCI / CPU Mitigations require a Windows restart to take effect.`n`nWould you like to restart your computer now?"
-        }
-        if ([System.Windows.MessageBox]::Show($rbMsg, "BetterTitus - Restart Required", [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Question) -eq [System.Windows.MessageBoxResult]::Yes) {
-            Restart-Computer -Force
-        }
-    }
+    [BetterTitus.NativeMethods]::BroadcastSettingsChange()
+    Sync-SystemStateAsync { Write-BTLog "=== TODAS AS ALTERAÇÕES FORAM CONCLUÍDAS ===" "OK" }
 })
 
 # ==============================================================================
-# REVERTER OTIMIZAÇÕES
+# REVERTER OTIMIZAÇÕES SELECIONADAS (UNDO)
 # ==============================================================================
 $BtnUndoTweaks.Add_Click({
-    Write-BTLog "=== REVERTENDO OTIMIZAÇÕES ===" "HEADER"
-    $revertedAny = $false
-    $needsReboot = $false
+    Write-BTLog "=== REVERTENDO OTIMIZAÇÕES SELECIONADAS ===" "HEADER"
 
     foreach ($chk in $AllLeftChecks) {
-        $wasActive = ($script:InitialTweakState.ContainsKey($chk.Name) -and $script:InitialTweakState[$chk.Name] -eq $true)
-        if ($chk.IsChecked -or $wasActive) {
-            if ($chk.Name -in @("ChkHVCI", "ChkCpuMitigations")) { $needsReboot = $true }
+        if ($chk.IsChecked) {
             Invoke-RevertSingleTweak $chk.Name
-            $revertedAny = $true
         }
     }
 
-    if (-not $revertedAny) {
-        Write-BTLog "Nenhuma otimização marcada ou alterada para reverter." "WARN"
-    } else {
-        [BetterTitus.NativeMethods]::BroadcastSettingsChange()
-    }
+    $adapters = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceDescription -notmatch 'Loopback|Pseudo' }
+    foreach ($nic in $adapters) { Set-DnsClientServerAddress -InterfaceIndex $nic.ifIndex -ResetServerAddresses -ErrorAction SilentlyContinue }
+    $CmbDNS.SelectedIndex = 0
+    [BetterTitus.NativeMethods]::BroadcastSettingsChange()
 
-    Sync-SystemState
-    Write-BTLog "=== REVERSÃO CONCLUÍDA E ESTADO SINCRONIZADO ===" "OK"
-
-    if ($needsReboot) {
-        $rbMsg = if ($script:Lang -eq "PT") {
-            "A reversão de HVCI / Mitigações de CPU exige reinicialização para entrar em vigor.`n`nDeseja reiniciar agora?"
-        } else {
-            "Reverting HVCI / CPU Mitigations requires a restart to take effect.`n`nRestart now?"
-        }
-        if ([System.Windows.MessageBox]::Show($rbMsg, "BetterTitus - Restart Required", [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Question) -eq [System.Windows.MessageBoxResult]::Yes) {
-            Restart-Computer -Force
-        }
-    }
+    Sync-SystemStateAsync { Write-BTLog "=== REVERSÃO CONCLUÍDA ===" "OK" }
 })
 
-# Inicialização rápida sem bloquear abertura da janela
-Set-AppLanguage $script:Lang
-$window.Add_ContentRendered({
-    Sync-SystemState
-    Update-SelectedGameUI
-    Write-BTLog "Interface gráfica pronta e estado do sistema sincronizado." "OK"
-})
+# ==============================================================================
+# INICIALIZAÇÃO
+# ==============================================================================
+Apply-AppTheme $script:isDark
+Set-AppLanguage $script:Lang $false
+Update-SelectedGameUI
+Sync-SystemStateAsync {
+    Write-BTLog "BetterTitus pronto. Estado real do sistema sincronizado." "OK"
+}
 $window.ShowDialog() | Out-Null
